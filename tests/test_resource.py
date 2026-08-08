@@ -14,6 +14,11 @@ def make_resource(**overrides):
     return MagentoResource(**defaults)
 
 
+def test_repr_never_exposes_the_password():
+    resource = make_resource(password="super-secret-password")
+    assert "super-secret-password" not in repr(resource)
+
+
 def test_get_fetches_token_then_calls_endpoint():
     resource = make_resource()
     with requests_mock.Mocker() as m:

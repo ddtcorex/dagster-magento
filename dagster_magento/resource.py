@@ -2,12 +2,13 @@ import time
 
 import requests
 from dagster import ConfigurableResource, get_dagster_logger
+from pydantic import Field
 
 
 class MagentoResource(ConfigurableResource):
     base_url: str
     username: str
-    password: str
+    password: str = Field(repr=False, json_schema_extra={"dagster__is_secret": True})
     store_view: str
     verbose_logging: bool = False
 
