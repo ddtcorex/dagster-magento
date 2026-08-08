@@ -79,6 +79,19 @@ def test_run_upload_only_catches_http_error_not_other_exceptions():
         run_upload(chunks, send=send, row_id_field="sku", logger=logging.getLogger("test"))
 
 
+def test_run_upload_includes_response_body_in_error_message():
+    chunks = [[{"sku": "BAD-SKU"}]]
+
+    def send(chunk):
+        error = make_http_error(400, "400 Client Error: None for url: x")
+        error.response._content = b'{"message": "The product does not exist"}'
+        raise error
+
+    result = run_upload(chunks, send=send, row_id_field="sku", logger=logging.getLogger("test"))
+
+    assert "does not exist" in result.errors[0]["message"]
+
+
 def test_upload_result_to_metadata():
     result = UploadResult(succeeded=10, failed=2, errors=[{"chunk_index": 0, "row_ids": ["X"], "status_code": 400, "message": "m"}])
     assert result.to_metadata() == {"succeeded": 10, "failed": 2, "error_count": 1}

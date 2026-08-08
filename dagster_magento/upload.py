@@ -40,17 +40,19 @@ def run_upload(
             failed += len(chunk)
             row_ids = [row.get(row_id_field) for row in chunk]
             status_code = error.response.status_code if error.response is not None else None
+            response_body = error.response.text[:1000] if error.response is not None else ""
+            message = f"{error} - response body: {response_body}" if response_body else str(error)
             errors.append(
                 {
                     "chunk_index": index,
                     "row_ids": row_ids,
                     "status_code": status_code,
-                    "message": str(error),
+                    "message": message,
                 }
             )
             logger.warning(
                 f"Chunk {index}/{len(chunks)} failed ({len(chunk)} rows, "
-                f"row_ids={row_ids[:10]}): {error}"
+                f"row_ids={row_ids[:10]}): {message}"
             )
 
     logger.info(f"Upload complete: {succeeded} succeeded, {failed} failed across {len(chunks)} chunks")
