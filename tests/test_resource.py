@@ -222,6 +222,42 @@ def test_upload_rows_aborts_immediately_on_auth_failure_instead_of_retrying_per_
     assert len(token_requests) == 1  # NOT 5 - must not retry auth per row
 
 
+def test_get_paginated_warns_and_stops_on_non_dict_response(caplog):
+    resource = make_resource()
+    with caplog.at_level(logging.WARNING):
+        with requests_mock.Mocker() as m:
+            m.post(
+                "https://shop.test/rest/all/V1/integration/admin/token",
+                json="fake-token-123",
+            )
+            m.get(
+                "https://shop.test/rest/all/V1/store/storeConfigs",
+                json=[{"id": 1}],  # bare list, not {"items": [...]}
+            )
+            result = resource.get_paginated("store/storeConfigs")
+
+    assert result == []
+    assert "expected a dict response" in caplog.text
+
+
+def test_get_paginated_warns_and_stops_when_response_key_missing(caplog):
+    resource = make_resource()
+    with caplog.at_level(logging.WARNING):
+        with requests_mock.Mocker() as m:
+            m.post(
+                "https://shop.test/rest/all/V1/integration/admin/token",
+                json="fake-token-123",
+            )
+            m.get(
+                "https://shop.test/rest/all/V1/products",
+                json={"message": "not found"},
+            )
+            result = resource.get_paginated("products")
+
+    assert result == []
+    assert "not found in response" in caplog.text
+
+
 def test_get_paginated_stops_after_a_single_partial_page():
     resource = make_resource()
     with requests_mock.Mocker() as m:

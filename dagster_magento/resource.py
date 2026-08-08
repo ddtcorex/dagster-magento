@@ -115,6 +115,19 @@ class MagentoResource(ConfigurableResource):
                 "searchCriteria[current_page]": page,
             }
             response = self.get(endpoint, params=page_params)
+            if not isinstance(response, dict):
+                logger.warning(
+                    f"get_paginated({endpoint}): expected a dict response with "
+                    f"key '{response_key}', got {type(response).__name__} - "
+                    f"this endpoint may not support search-criteria pagination"
+                )
+                break
+            if response_key not in response:
+                logger.warning(
+                    f"get_paginated({endpoint}): response_key '{response_key}' not "
+                    f"found in response (keys: {list(response.keys())}) - stopping pagination"
+                )
+                break
             page_items = response.get(response_key, [])
             logger.info(f"Fetched page {page} of {endpoint} ({len(page_items)} items)")
             items.extend(page_items)
