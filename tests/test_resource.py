@@ -1,6 +1,7 @@
 import logging
 import requests_mock
 from dagster_magento.resource import MagentoResource
+from dagster_magento.upload import UploadResult
 
 
 def make_resource(**overrides):
@@ -285,3 +286,101 @@ def test_post_raises_on_http_error():
             assert False, "expected HTTPError"
         except Exception as error:
             assert "400" in str(error)
+
+
+def test_upload_rows_without_wrap_key_posts_one_row_per_request():
+    resource = make_resource()
+    rows = [{"sku": "A"}, {"sku": "B"}, {"sku": "C"}]
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/configurable-products/parent-sku/child",
+            status_code=200,
+        )
+        result = resource.upload_rows("configurable-products/parent-sku/child", rows)
+
+    data_requests = [
+        r
+        for r in m.request_history
+        if r.path.endswith("/configurable-products/parent-sku/child")
+    ]
+    assert len(data_requests) == 3
+    assert [r.json() for r in data_requests] == rows
+    assert result == UploadResult(succeeded=3, failed=0, errors=[])
+
+
+def test_upload_rows_with_wrap_key_groups_into_chunks():
+    resource = make_resource()
+    rows = [{"sku": f"SKU{i}"} for i in range(5)]
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/inventory/source-items",
+            status_code=200,
+        )
+        result = resource.upload_rows(
+            "inventory/source-items", rows, chunk_size=2, wrap_key="sourceItems"
+        )
+
+    data_requests = [
+        r for r in m.request_history if r.path.endswith("/inventory/source-items")
+    ]
+    assert len(data_requests) == 3  # chunks of 2, 2, 1
+    assert data_requests[0].json() == {"sourceItems": rows[0:2]}
+    assert data_requests[1].json() == {"sourceItems": rows[2:4]}
+    assert data_requests[2].json() == {"sourceItems": rows[4:5]}
+    assert result == UploadResult(succeeded=5, failed=0, errors=[])
+
+
+def test_upload_rows_continues_past_a_failed_chunk_and_reports_row_ids():
+    resource = make_resource()
+    rows = [{"sku": "A"}, {"sku": "B"}, {"sku": "C"}]
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/inventory/source-items",
+            [
+                {"status_code": 200},
+                {"status_code": 400, "json": {"message": "Validation Failed"}},
+                {"status_code": 200},
+            ],
+        )
+        result = resource.upload_rows(
+            "inventory/source-items", rows, chunk_size=1, wrap_key="sourceItems"
+        )
+
+    assert result.succeeded == 2
+    assert result.failed == 1
+    assert result.errors[0]["row_ids"] == ["B"]
+    assert result.errors[0]["status_code"] == 400
+
+
+def test_upload_rows_uses_custom_row_id_field():
+    resource = make_resource()
+    rows = [{"id": "CUST-1"}]
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/customers",
+            status_code=400,
+            json={"message": "Bad customer"},
+        )
+        result = resource.upload_rows("customers", rows, row_id_field="id")
+
+    assert result.errors[0]["row_ids"] == ["CUST-1"]

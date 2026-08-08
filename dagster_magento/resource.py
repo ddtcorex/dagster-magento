@@ -4,6 +4,8 @@ import requests
 from dagster import ConfigurableResource, get_dagster_logger
 from pydantic import Field
 
+from dagster_magento.upload import UploadResult, chunk_rows, run_upload
+
 
 class MagentoResource(ConfigurableResource):
     base_url: str
@@ -115,3 +117,26 @@ class MagentoResource(ConfigurableResource):
 
     def post(self, endpoint: str, payload: dict) -> requests.Response:
         return self._request("POST", endpoint, json=payload)
+
+    def upload_rows(
+        self,
+        endpoint: str,
+        rows: list,
+        chunk_size: int = 200,
+        wrap_key: str | None = None,
+        row_id_field: str = "sku",
+    ) -> UploadResult:
+        logger = get_dagster_logger()
+
+        if wrap_key is None:
+            chunks = [[row] for row in rows]
+
+            def send(chunk):
+                self.post(endpoint, chunk[0])
+        else:
+            chunks = chunk_rows(rows, chunk_size)
+
+            def send(chunk):
+                self.post(endpoint, {wrap_key: chunk})
+
+        return run_upload(chunks, send, row_id_field, logger)
