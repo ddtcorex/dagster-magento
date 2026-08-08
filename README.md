@@ -10,7 +10,7 @@ project-specific custom API modules.
 ## Installation
 
 ```
-pip install git+https://git.sutunam.com/PATH/TO/dagster-magento.git@v0.1.0
+pip install git+https://github.com/ddtcorex/dagster-magento.git@v0.1.0
 ```
 
 ## Usage
