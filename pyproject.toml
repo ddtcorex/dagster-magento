@@ -1,0 +1,23 @@
+[project]
+name = "dagster-magento"
+version = "0.1.0"
+description = "Reusable Dagster resource for Magento 2 REST integrations"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "dagster>=1.5",
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "requests-mock>=1.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dagster_magento"]
