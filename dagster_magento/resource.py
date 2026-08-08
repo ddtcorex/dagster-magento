@@ -82,3 +82,33 @@ class MagentoResource(ConfigurableResource):
     def get(self, endpoint: str, params: dict | None = None):
         response = self._request("GET", endpoint, params=params)
         return response.json()
+
+    def get_paginated(
+        self,
+        endpoint: str,
+        params: dict | None = None,
+        page_size: int = 1000,
+        response_key: str = "items",
+    ) -> list:
+        logger = get_dagster_logger()
+        base_params = dict(params or {})
+        page = 1
+        items = []
+
+        while True:
+            page_params = {
+                **base_params,
+                "searchCriteria[page_size]": page_size,
+                "searchCriteria[current_page]": page,
+            }
+            response = self.get(endpoint, params=page_params)
+            page_items = response.get(response_key, [])
+            logger.info(f"Fetched page {page} of {endpoint} ({len(page_items)} items)")
+            items.extend(page_items)
+
+            if len(page_items) < page_size:
+                break
+            page += 1
+
+        logger.info(f"Pagination complete for {endpoint}: {len(items)} items across {page} pages")
+        return items

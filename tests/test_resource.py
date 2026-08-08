@@ -186,3 +186,61 @@ def test_token_value_never_appears_in_logs_even_with_verbose_logging_and_401_ret
     assert "super-secret-stale-token" not in caplog.text
     assert "super-secret-fresh-token" not in caplog.text
     assert "secret-password" not in caplog.text
+
+
+def test_get_paginated_stops_after_a_single_partial_page():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/products",
+            json={"items": [{"sku": "A"}, {"sku": "B"}]},
+        )
+        result = resource.get_paginated("products", page_size=1000)
+
+    assert result == [{"sku": "A"}, {"sku": "B"}]
+    data_requests = [r for r in m.request_history if r.path.endswith("/products")]
+    assert len(data_requests) == 1
+    assert "searchCriteria%5Bpage_size%5D=1000" in data_requests[0].url
+    assert "searchCriteria%5Bcurrent_page%5D=1" in data_requests[0].url
+
+
+def test_get_paginated_continues_to_a_second_page():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        page_one = {"items": [{"sku": f"SKU{i}"} for i in range(3)]}
+        page_two = {"items": [{"sku": "SKU-LAST"}]}
+        m.get(
+            "https://shop.test/rest/all/V1/products",
+            [{"json": page_one}, {"json": page_two}],
+        )
+        result = resource.get_paginated("products", page_size=3)
+
+    assert result == page_one["items"] + page_two["items"]
+    data_requests = [r for r in m.request_history if r.path.endswith("/products")]
+    assert len(data_requests) == 2
+    assert "searchCriteria%5Bcurrent_page%5D=1" in data_requests[0].url
+    assert "searchCriteria%5Bcurrent_page%5D=2" in data_requests[1].url
+
+
+def test_get_paginated_respects_custom_response_key():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/orders",
+            json={"results": [{"id": 1}]},
+        )
+        result = resource.get_paginated("orders", page_size=50, response_key="results")
+
+    assert result == [{"id": 1}]
