@@ -244,3 +244,44 @@ def test_get_paginated_respects_custom_response_key():
         result = resource.get_paginated("orders", page_size=50, response_key="results")
 
     assert result == [{"id": 1}]
+
+
+def test_post_sends_json_body_with_bearer_token():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/products",
+            status_code=200,
+            json={"sku": "NEW-SKU"},
+        )
+        response = resource.post("products", {"product": {"sku": "NEW-SKU"}})
+
+    assert response.status_code == 200
+    data_requests = [
+        r for r in m.request_history if r.path.endswith("/products") and r.method == "POST"
+    ]
+    assert data_requests[0].json() == {"product": {"sku": "NEW-SKU"}}
+    assert data_requests[0].headers["Authorization"] == "Bearer fake-token-123"
+
+
+def test_post_raises_on_http_error():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/products",
+            status_code=400,
+            json={"message": "Validation failed"},
+        )
+        try:
+            resource.post("products", {"product": {"sku": "BAD"}})
+            assert False, "expected HTTPError"
+        except Exception as error:
+            assert "400" in str(error)

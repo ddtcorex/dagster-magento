@@ -112,3 +112,6 @@ class MagentoResource(ConfigurableResource):
 
         logger.info(f"Pagination complete for {endpoint}: {len(items)} items across {page} pages")
         return items
+
+    def post(self, endpoint: str, payload: dict) -> requests.Response:
+        return self._request("POST", endpoint, json=payload)
