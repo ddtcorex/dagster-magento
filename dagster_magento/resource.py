@@ -7,6 +7,12 @@ from pydantic import Field
 from dagster_magento.upload import UploadResult, chunk_rows, run_upload
 
 
+class MagentoAuthError(Exception):
+    """Raised when fetching a Magento admin token fails - never caught by
+    upload_rows' per-row/chunk retry logic, since a bad credential or a
+    locked account should abort immediately, not be retried once per row."""
+
+
 class MagentoResource(ConfigurableResource):
     base_url: str
     username: str
@@ -22,12 +28,17 @@ class MagentoResource(ConfigurableResource):
     def _fetch_token(self) -> str:
         logger = get_dagster_logger()
         logger.info(f"Fetching Magento admin token (store_view={self.store_view})")
-        response = requests.post(
-            self._url("integration/admin/token"),
-            json={"username": self.username, "password": self.password},
-            timeout=30,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.post(
+                self._url("integration/admin/token"),
+                json={"username": self.username, "password": self.password},
+                timeout=30,
+            )
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as error:
+            raise MagentoAuthError(
+                f"Failed to fetch Magento admin token (store_view={self.store_view}): {error}"
+            ) from error
         self._token = response.json()
         return self._token
 

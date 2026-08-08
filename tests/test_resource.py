@@ -1,6 +1,8 @@
 import logging
+
+import pytest
 import requests_mock
-from dagster_magento.resource import MagentoResource
+from dagster_magento.resource import MagentoAuthError, MagentoResource
 from dagster_magento.upload import UploadResult
 
 
@@ -187,6 +189,37 @@ def test_token_value_never_appears_in_logs_even_with_verbose_logging_and_401_ret
     assert "super-secret-stale-token" not in caplog.text
     assert "super-secret-fresh-token" not in caplog.text
     assert "secret-password" not in caplog.text
+
+
+def test_fetch_token_failure_raises_magento_auth_error_not_http_error():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            status_code=401,
+            json={"message": "Invalid credentials"},
+        )
+        with pytest.raises(MagentoAuthError):
+            resource.get("store/storeConfigs")
+
+
+def test_upload_rows_aborts_immediately_on_auth_failure_instead_of_retrying_per_row():
+    resource = make_resource()
+    rows = [{"sku": f"SKU{i}"} for i in range(5)]
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            status_code=401,
+            json={"message": "Invalid credentials"},
+        )
+        with pytest.raises(MagentoAuthError):
+            resource.upload_rows("products", rows)
+
+    token_requests = [
+        r for r in m.request_history if r.path_url.endswith("/integration/admin/token")
+    ]
+    assert len(token_requests) == 1  # NOT 5 - must not retry auth per row
 
 
 def test_get_paginated_stops_after_a_single_partial_page():
