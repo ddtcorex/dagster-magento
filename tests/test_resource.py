@@ -2,6 +2,7 @@ import logging
 
 import pytest
 import requests_mock
+from dagster_magento.bulk import AsyncBulkResult
 from dagster_magento.resource import MagentoAuthError, MagentoResource
 from dagster_magento.upload import UploadResult
 
@@ -434,6 +435,158 @@ def test_upload_rows_continues_past_a_failed_chunk_and_reports_row_ids():
     assert result.failed == 1
     assert result.errors[0]["row_ids"] == ["B"]
     assert result.errors[0]["status_code"] == 400
+
+
+def test_put_sends_json_body_with_bearer_token():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.put(
+            "https://shop.test/rest/all/V1/products/SKU-1",
+            status_code=200,
+            json={"sku": "SKU-1"},
+        )
+        response = resource.put("products/SKU-1", {"product": {"name": "Updated"}})
+
+    assert response.status_code == 200
+    data_requests = [
+        r for r in m.request_history if r.path.endswith("/sku-1") and r.method == "PUT"
+    ]
+    assert data_requests[0].json() == {"product": {"name": "Updated"}}
+    assert data_requests[0].headers["Authorization"] == "Bearer fake-token-123"
+
+
+def test_put_raises_on_http_error():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.put(
+            "https://shop.test/rest/all/V1/products/SKU-1",
+            status_code=400,
+            json={"message": "Validation failed"},
+        )
+        with pytest.raises(Exception, match="400"):
+            resource.put("products/SKU-1", {"product": {}})
+
+
+def test_delete_sends_bearer_token_and_no_body():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.delete(
+            "https://shop.test/rest/all/V1/products/SKU-1",
+            status_code=200,
+            json=True,
+        )
+        response = resource.delete("products/SKU-1")
+
+    assert response.status_code == 200
+    data_requests = [
+        r for r in m.request_history if r.path.endswith("/sku-1") and r.method == "DELETE"
+    ]
+    assert data_requests[0].headers["Authorization"] == "Bearer fake-token-123"
+
+
+def test_delete_raises_on_http_error():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.delete(
+            "https://shop.test/rest/all/V1/products/SKU-1",
+            status_code=404,
+            json={"message": "not found"},
+        )
+        with pytest.raises(Exception, match="404"):
+            resource.delete("products/SKU-1")
+
+
+def test_upload_rows_async_posts_one_json_array_per_chunk_to_the_async_bulk_endpoint():
+    resource = make_resource()
+    rows = [{"sku": "A"}, {"sku": "B"}, {"sku": "C"}]
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.post(
+            "https://shop.test/rest/all/async/bulk/V1/products",
+            [
+                {
+                    "json": {
+                        "bulk_uuid": "uuid-1",
+                        "request_items": [
+                            {"id": 0, "status": "accepted"},
+                            {"id": 1, "status": "accepted"},
+                        ],
+                    }
+                },
+                {
+                    "json": {
+                        "bulk_uuid": "uuid-2",
+                        "request_items": [{"id": 0, "status": "accepted"}],
+                    }
+                },
+            ],
+        )
+        result = resource.upload_rows_async("products", rows, chunk_size=2)
+
+    data_requests = [
+        r for r in m.request_history if r.path.endswith("/async/bulk/v1/products")
+    ]
+    assert len(data_requests) == 2
+    assert data_requests[0].json() == [{"sku": "A"}, {"sku": "B"}]
+    assert data_requests[1].json() == [{"sku": "C"}]
+    assert result == AsyncBulkResult(
+        bulk_uuids=["uuid-1", "uuid-2"], accepted=3, rejected=0, errors=[]
+    )
+
+
+def test_upload_rows_async_aborts_immediately_on_auth_failure():
+    resource = make_resource()
+    rows = [{"sku": f"SKU{i}"} for i in range(5)]
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            status_code=401,
+            json={"message": "Invalid credentials"},
+        )
+        with pytest.raises(MagentoAuthError):
+            resource.upload_rows_async("products", rows)
+
+    token_requests = [
+        r for r in m.request_history if r.path_url.endswith("/integration/admin/token")
+    ]
+    assert len(token_requests) == 1  # NOT 5 - must not retry auth per row
+
+
+def test_get_bulk_status_calls_the_bulk_detailed_status_endpoint():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/bulk/uuid-1/detailed-status",
+            json={"operations_list": [], "operation_count": 0},
+        )
+        result = resource.get_bulk_status("uuid-1")
+
+    assert result == {"operations_list": [], "operation_count": 0}
 
 
 def test_upload_rows_uses_custom_row_id_field():

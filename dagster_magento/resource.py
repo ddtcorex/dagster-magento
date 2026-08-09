@@ -4,6 +4,7 @@ import requests
 from dagster import ConfigurableResource, get_dagster_logger
 from pydantic import Field
 
+from dagster_magento.bulk import AsyncBulkResult, run_async_upload
 from dagster_magento.upload import UploadResult, chunk_rows, run_upload
 
 
@@ -22,8 +23,8 @@ class MagentoResource(ConfigurableResource):
 
     _token: str | None = None
 
-    def _url(self, endpoint: str) -> str:
-        return f"{self.base_url}/rest/{self.store_view}/V1/{endpoint}"
+    def _url(self, endpoint: str, api_prefix: str = "V1") -> str:
+        return f"{self.base_url}/rest/{self.store_view}/{api_prefix}/{endpoint}"
 
     def _fetch_token(self) -> str:
         logger = get_dagster_logger()
@@ -49,13 +50,15 @@ class MagentoResource(ConfigurableResource):
         headers = {"Authorization": f"Bearer {token}"}
         return requests.request(method, url, headers=headers, timeout=30, **kwargs)
 
-    def _request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+    def _request(
+        self, method: str, endpoint: str, api_prefix: str = "V1", **kwargs
+    ) -> requests.Response:
         logger = get_dagster_logger()
 
         if self._token is None:
             self._fetch_token()
 
-        url = self._url(endpoint)
+        url = self._url(endpoint, api_prefix)
         params = kwargs.get("params")
         # params/store_view are small and always safe to log; the request/
         # response BODY is gated behind verbose_logging below since a single
@@ -139,8 +142,14 @@ class MagentoResource(ConfigurableResource):
         logger.info(f"Pagination complete for {endpoint}: {len(items)} items across {page} pages")
         return items
 
-    def post(self, endpoint: str, payload: dict) -> requests.Response:
+    def post(self, endpoint: str, payload: dict | list) -> requests.Response:
         return self._request("POST", endpoint, json=payload)
+
+    def put(self, endpoint: str, payload: dict) -> requests.Response:
+        return self._request("PUT", endpoint, json=payload)
+
+    def delete(self, endpoint: str) -> requests.Response:
+        return self._request("DELETE", endpoint)
 
     def upload_rows(
         self,
@@ -164,3 +173,31 @@ class MagentoResource(ConfigurableResource):
                 self.post(endpoint, {wrap_key: chunk})
 
         return run_upload(chunks, send, row_id_field, logger)
+
+    def upload_rows_async(
+        self,
+        endpoint: str,
+        rows: list,
+        chunk_size: int = 200,
+        row_id_field: str = "sku",
+    ) -> AsyncBulkResult:
+        """Submit rows to Magento's core async/bulk API for high-volume writes.
+
+        Each chunk is POSTed as a JSON array to `async/bulk/V1/{endpoint}` -
+        Magento queues one operation per array element and returns immediately
+        (202) with a bulk_uuid, before the operations actually run. Use
+        get_bulk_status() to find out whether they succeeded. There's no
+        wrap_key here (unlike upload_rows): async/bulk always takes an array of
+        individual operation payloads, one per row.
+        """
+        logger = get_dagster_logger()
+        chunks = chunk_rows(rows, chunk_size)
+
+        def send(chunk):
+            response = self._request("POST", endpoint, api_prefix="async/bulk/V1", json=chunk)
+            return response.json()
+
+        return run_async_upload(chunks, send, row_id_field, logger)
+
+    def get_bulk_status(self, bulk_uuid: str) -> dict:
+        return self.get(f"bulk/{bulk_uuid}/detailed-status")
