@@ -145,6 +145,36 @@ does. `result.accepted`/`result.rejected` only mean "Magento queued (or
 rejected outright) the operation" — call `get_bulk_status()` to find out
 whether queued operations actually succeeded.
 
+## Resolving select/multiselect attribute options
+
+Select and multiselect EAV attributes (`color`, `size`, ...) store an integer
+`option_id` internally, but a supplier feed or CSV gives you the human-readable
+label instead. `resolve_attribute_options()` looks up each label against the
+attribute's existing options (trimmed, case-insensitive) and creates whichever
+ones don't exist yet, returning a label → option_id map:
+
+```python
+@asset
+def color_option_ids(magento: MagentoResource, product_feed: list) -> dict:
+    labels = {row["color"] for row in product_feed if row.get("color")}
+    return magento.resolve_attribute_options("color", list(labels))
+
+@asset(deps=[color_option_ids])
+def products_with_resolved_colors(magento: MagentoResource, product_feed: list, color_option_ids: dict) -> None:
+    for row in product_feed:
+        option_id = color_option_ids.get(row["color"])
+        magento.post("products", {"product": {"sku": row["sku"], "custom_attributes": [
+            {"attribute_code": "color", "value": option_id},
+        ]}})
+```
+
+The returned dict is keyed by the exact label strings you passed in, so
+`color_option_ids[row["color"]]` works directly without re-trimming/re-casing
+the label yourself. Two calls racing to create the same missing label on the
+same `attribute_code` at the same time can create duplicate options — Magento's
+add-option endpoint doesn't dedupe — so resolve options for a given attribute
+from one place, not from parallel/partitioned runs writing to it concurrently.
+
 ## Recipe: core endpoints for common sync tasks
 
 All of the following use only `get`/`get_paginated`/`post`/`put`/`delete`/
@@ -166,4 +196,5 @@ modules required.
 | Manage MSI sources/stocks | `GET\|POST inventory/sources`, `inventory/stocks`, `inventory/stock-source-links` |
 | Set stock quantities | `POST inventory/source-items` (via `upload_rows`, wrap_key=`"sourceItems"`) |
 | Create/update a product attribute | `POST products/attributes`, `POST products/attributes/:code/options` |
+| Resolve/auto-create select or multiselect option labels | `GET\|POST products/attributes/:code/options` (via `resolve_attribute_options`) |
 | Create/update an attribute set | `GET\|POST products/attribute-sets` |
