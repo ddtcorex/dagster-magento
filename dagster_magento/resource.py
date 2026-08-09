@@ -201,3 +201,49 @@ class MagentoResource(ConfigurableResource):
 
     def get_bulk_status(self, bulk_uuid: str) -> dict:
         return self.get(f"bulk/{bulk_uuid}/detailed-status")
+
+    def resolve_attribute_options(self, attribute_code: str, labels: list) -> dict:
+        """Map select/multiselect attribute option labels to their Magento option_id,
+        creating any missing options along the way.
+
+        Every EAV select/multiselect attribute stores an integer option_id
+        internally, but data sources (supplier feeds, CSVs, ...) give you the
+        human-readable label instead - this resolves labels to ids via
+        `GET products/attributes/{code}` (existing options) and
+        `POST products/attributes/{code}/options` (for labels with no match),
+        matching case-insensitively and trimmed. The returned dict is keyed by
+        the exact label strings passed in, so callers can look values up
+        without re-normalizing them.
+
+        Concurrent calls for the same attribute_code (e.g. two parallel runs)
+        can race and create duplicate options with the same label - Magento's
+        add-option endpoint doesn't dedupe. Same limitation as this had in every
+        integration that's had to solve it; not addressed here.
+        """
+        attribute = self.get(f"products/attributes/{attribute_code}")
+        existing_by_key = {
+            option["label"].strip().casefold(): int(option["value"])
+            for option in attribute.get("options", [])
+            if option.get("value") not in (None, "")
+        }
+
+        result = {}
+        created_by_key = {}
+        for label in labels:
+            key = label.strip().casefold()
+            if not key:
+                continue
+            if key in existing_by_key:
+                result[label] = existing_by_key[key]
+            elif key in created_by_key:
+                result[label] = created_by_key[key]
+            else:
+                response = self.post(
+                    f"products/attributes/{attribute_code}/options",
+                    {"option": {"label": label.strip()}},
+                )
+                option_id = int(response.json())
+                created_by_key[key] = option_id
+                result[label] = option_id
+
+        return result

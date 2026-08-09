@@ -606,3 +606,89 @@ def test_upload_rows_uses_custom_row_id_field():
         result = resource.upload_rows("customers", rows, row_id_field="id")
 
     assert result.errors[0]["row_ids"] == ["CUST-1"]
+
+
+def test_resolve_attribute_options_matches_existing_options_case_insensitively():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/products/attributes/color",
+            json={"options": [{"label": "Red", "value": "42"}, {"label": " ", "value": ""}]},
+        )
+        result = resource.resolve_attribute_options("color", ["red", " RED "])
+
+    assert result == {"red": 42, " RED ": 42}
+    # no option-creation POST should happen when everything already matches
+    create_requests = [
+        r for r in m.request_history if r.path.endswith("/color/options") and r.method == "POST"
+    ]
+    assert create_requests == []
+
+
+def test_resolve_attribute_options_creates_missing_options():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/products/attributes/color",
+            json={"options": [{"label": "Red", "value": "42"}]},
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/products/attributes/color/options",
+            json="91",
+        )
+        result = resource.resolve_attribute_options("color", ["Red", "Blue"])
+
+    assert result == {"Red": 42, "Blue": 91}
+    create_requests = [
+        r for r in m.request_history if r.path.endswith("/color/options") and r.method == "POST"
+    ]
+    assert len(create_requests) == 1
+    assert create_requests[0].json() == {"option": {"label": "Blue"}}
+
+
+def test_resolve_attribute_options_creates_a_case_insensitive_duplicate_only_once():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/products/attributes/color",
+            json={"options": []},
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/products/attributes/color/options",
+            json="91",
+        )
+        result = resource.resolve_attribute_options("color", ["Blue", "blue", "BLUE"])
+
+    assert result == {"Blue": 91, "blue": 91, "BLUE": 91}
+    create_requests = [
+        r for r in m.request_history if r.path.endswith("/color/options") and r.method == "POST"
+    ]
+    assert len(create_requests) == 1
+
+
+def test_resolve_attribute_options_skips_blank_labels():
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/products/attributes/color",
+            json={"options": []},
+        )
+        result = resource.resolve_attribute_options("color", ["", "   "])
+
+    assert result == {}
