@@ -1,6 +1,6 @@
 from conftest import FakeResolver
 
-from dagster_magento.models import ProductRow
+from dagster_magento.models import GroupedLink, ProductRow
 from dagster_magento.operation import BulkSpec
 from dagster_magento.resolvers import AttributeMeta
 from dagster_magento.writers.products import plan_products
@@ -288,6 +288,43 @@ def test_operation_and_bulk_payloads_never_alias():
     assert (
         store_op.payload["product"]["custom_attributes"]
         is not store_op.bulk.payload["product"]["custom_attributes"]
+    )
+
+
+def test_type_parts_reach_both_operation_and_bulk_payloads():
+    """apply_type_parts mutates the product body in place - plan_products
+    must call it before the main operation's body is copied into
+    Operation.payload/BulkSpec.payload, or a type part (here: a grouped
+    product's product_links) would land in neither side, or only one."""
+    resolver = _resolver()
+    row = ProductRow(
+        sku="GRP1",
+        type="grouped",
+        attribute_set="Default",
+        websites=["base"],
+        grouped_links=[GroupedLink(sku="ITEM-A", qty=2, position=1)],
+    )
+
+    result = plan_products([row], resolver, existing=set())
+
+    assert result.failed == []
+    main_op = next(op for op in result.operations if op.store_code is None)
+    expected_links = [
+        {
+            "sku": "GRP1",
+            "link_type": "associated",
+            "linked_product_sku": "ITEM-A",
+            "linked_product_type": "simple",
+            "position": 1,
+            "extension_attributes": {"qty": 2},
+        }
+    ]
+    assert main_op.payload["product"]["product_links"] == expected_links
+    assert main_op.bulk.payload["product"]["product_links"] == expected_links
+    # The two sides never share the same list/dict objects.
+    assert (
+        main_op.payload["product"]["product_links"]
+        is not main_op.bulk.payload["product"]["product_links"]
     )
 
 

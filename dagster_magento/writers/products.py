@@ -106,8 +106,12 @@ def _attribute_codes(rows: list[ProductRow]) -> set[str]:
 
 def _plan_row(row: ProductRow, resolver, is_existing: bool) -> list[Operation]:
     body = _product_body(row, resolver)
+    # apply_type_parts mutates `body` in place, so it must run before the
+    # main operation copies `body` into its own payload/bulk dicts - a
+    # copy taken first would carry none of the type-specific fields.
+    type_part_operations = apply_type_parts(row, body, resolver)
     operations = [_main_operation(row.sku, body, is_existing)]
-    operations.extend(apply_type_parts(row, body, resolver))
+    operations.extend(type_part_operations)
     operations.extend(_store_value_operations(row, resolver))
     return operations
 
