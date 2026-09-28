@@ -2,11 +2,24 @@ import logging
 
 import pytest
 import requests
+import requests_mock
 
 from dagster_magento import bulk, executor
 from dagster_magento.executor import MagentoImportError, check_error_ratio, execute
 from dagster_magento.operation import BulkSpec, Operation
+from dagster_magento.resource import MagentoResource
 from dagster_magento.upload import UploadResult
+
+
+def make_resource(**overrides):
+    defaults = dict(
+        base_url="https://shop.test",
+        username="admin",
+        password="secret-password",
+        store_view="all",
+    )
+    defaults.update(overrides)
+    return MagentoResource(**defaults)
 
 
 def make_http_error(status_code, message):
@@ -152,6 +165,52 @@ def test_list_endpoint_maps_failed_items_to_rows_by_sku():
     messages = {error["row_ids"][0]: error["message"] for error in result.errors}
     assert messages["B-404"] == "Requested product doesn't exist. SKU: B-404."
     assert messages["C-2"] == "Not found: C-2"
+
+
+def test_list_endpoint_http_error_fails_whole_chunk():
+    # A real MagentoResource this time (not StubResource) - the retry/
+    # backoff machinery in _request lives there, and this test pins the
+    # brief's rule that an HTTPError fails every row in the chunk it hit,
+    # not just the one that finally raised.
+    resource = make_resource()
+    resource._sleep = lambda seconds: None  # tests must never actually sleep
+
+    ops = [
+        Operation(
+            method="POST",
+            endpoint="products/base-prices",
+            payload={"sku": f"SKU{i}", "price": 10},
+            row_refs=(f"SKU{i}",),
+            list_key="prices",
+        )
+        for i in range(4)
+    ]
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/products/base-prices",
+            [
+                # First chunk (SKU0-2): a retryable 503, then a
+                # non-retryable 500 that ends the retry loop and raises.
+                {"status_code": 503},
+                {"status_code": 500, "json": {"message": "Internal error"}},
+                # Second chunk (SKU3): succeeds with no failed items.
+                {"status_code": 200, "json": []},
+            ],
+        )
+        result = execute(resource, ops, mode="sync", chunk_size=3)
+
+    assert result.succeeded == 1
+    assert result.failed == 3
+    assert len(result.errors) == 1
+    error = result.errors[0]
+    assert sorted(error["row_ids"]) == ["SKU0", "SKU1", "SKU2"]
+    assert error["status"] == "failed"
+    assert error["status_code"] == 500
 
 
 def test_bulk_mode_groups_by_endpoint_and_chunks_by_200(monkeypatch):
