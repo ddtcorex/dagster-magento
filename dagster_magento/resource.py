@@ -1,4 +1,6 @@
+import random
 import time
+from typing import ClassVar
 
 import requests
 from dagster import ConfigurableResource, get_dagster_logger
@@ -21,10 +23,27 @@ class MagentoResource(ConfigurableResource):
     store_view: str
     verbose_logging: bool = False
 
+    # Statuses worth retrying: rate-limited (429) and transient upstream/
+    # gateway failures (502/503/504). Anything else (400, 401 handled
+    # separately, 404, ...) is a data/auth problem a retry cannot fix.
+    RETRY_STATUSES: ClassVar[tuple[int, ...]] = (429, 502, 503, 504)
+    _RETRY_BASE_DELAY_SECONDS: ClassVar[float] = 0.5
+    _MAX_RETRIES: ClassVar[int] = 3
+
     _token: str | None = None
 
-    def _url(self, endpoint: str, api_prefix: str = "V1") -> str:
-        return f"{self.base_url}/rest/{self.store_view}/{api_prefix}/{endpoint}"
+    def _url(
+        self, endpoint: str, api_prefix: str = "V1", store_code: str | None = None
+    ) -> str:
+        # `api_prefix` swaps in the async bulk path ("async/bulk/V1") for
+        # upload_rows_async and submit_bulk without duplicating the auth/retry
+        # machinery below - every other caller keeps the default plain "V1".
+        scope = store_code if store_code is not None else self.store_view
+        return f"{self.base_url}/rest/{scope}/{api_prefix}/{endpoint}"
+
+    def _sleep(self, seconds: float) -> None:
+        # Wrapped so tests can monkeypatch this instead of actually sleeping.
+        time.sleep(seconds)
 
     def _fetch_token(self) -> str:
         logger = get_dagster_logger()
@@ -50,15 +69,35 @@ class MagentoResource(ConfigurableResource):
         headers = {"Authorization": f"Bearer {token}"}
         return requests.request(method, url, headers=headers, timeout=30, **kwargs)
 
+    def _send_timed(
+        self, method: str, url: str, endpoint: str, logger, label: str = "", **kwargs
+    ) -> requests.Response:
+        # Shared by the initial send and every retry site (401 refresh,
+        # RETRY_STATUSES backoff loop) so the timing/logging shape - and the
+        # exact log line text the logging tests assert on - lives in one
+        # place instead of being copy-pasted per call site. `label` is ""
+        # for the first send and " retry" for every retry, matching the
+        # original per-site log lines byte for byte.
+        started = time.monotonic()
+        response = self._send(method, url, self._token, **kwargs)
+        elapsed = time.monotonic() - started
+        logger.debug(f"{method} {endpoint}{label} -> {response.status_code} in {elapsed:.2f}s")
+        return response
+
     def _request(
-        self, method: str, endpoint: str, api_prefix: str = "V1", **kwargs
+        self,
+        method: str,
+        endpoint: str,
+        api_prefix: str = "V1",
+        store_code: str | None = None,
+        **kwargs,
     ) -> requests.Response:
         logger = get_dagster_logger()
 
         if self._token is None:
             self._fetch_token()
 
-        url = self._url(endpoint, api_prefix)
+        url = self._url(endpoint, api_prefix, store_code)
         params = kwargs.get("params")
         # params/store_view are small and always safe to log; the request/
         # response BODY is gated behind verbose_logging below since a single
@@ -68,26 +107,28 @@ class MagentoResource(ConfigurableResource):
         if self.verbose_logging and "json" in kwargs:
             logger.debug(f"{method} {endpoint} request body: {kwargs['json']}")
 
-        started = time.monotonic()
-        response = self._send(method, url, self._token, **kwargs)
-        elapsed = time.monotonic() - started
-        logger.debug(f"{method} {endpoint} -> {response.status_code} in {elapsed:.2f}s")
+        response = self._send_timed(method, url, endpoint, logger, **kwargs)
 
+        # 401 handling is scoped to this single _request call: one refresh-
+        # and-retry per call, never a counter shared across calls, so a
+        # second call that also hits a 401 gets its own fresh refresh.
         if response.status_code == 401:
             logger.warning(f"Magento token expired (401 on {endpoint}), refreshing and retrying")
             self._fetch_token()
-            started = time.monotonic()
-            response = self._send(method, url, self._token, **kwargs)
-            elapsed = time.monotonic() - started
-            logger.debug(f"{method} {endpoint} retry -> {response.status_code} in {elapsed:.2f}s")
+            response = self._send_timed(method, url, endpoint, logger, " retry", **kwargs)
 
-        if response.status_code == 503:
-            logger.warning(f"Magento returned 503 on {endpoint}, retrying once after backoff")
-            time.sleep(1)
-            started = time.monotonic()
-            response = self._send(method, url, self._token, **kwargs)
-            elapsed = time.monotonic() - started
-            logger.debug(f"{method} {endpoint} retry -> {response.status_code} in {elapsed:.2f}s")
+        attempt = 0
+        while response.status_code in self.RETRY_STATUSES and attempt < self._MAX_RETRIES:
+            retry_after = self._parse_retry_after(response)
+            base_delay = self._RETRY_BASE_DELAY_SECONDS * (2**attempt)
+            delay = max(retry_after, base_delay) + random.uniform(0, 0.1)
+            logger.warning(
+                f"Magento returned {response.status_code} on {endpoint}, "
+                f"retrying (attempt {attempt + 1}/{self._MAX_RETRIES}) after {delay:.2f}s"
+            )
+            self._sleep(delay)
+            response = self._send_timed(method, url, endpoint, logger, " retry", **kwargs)
+            attempt += 1
 
         if self.verbose_logging:
             logger.debug(f"{method} {endpoint} response body: {response.text[:2000]}")
@@ -95,8 +136,21 @@ class MagentoResource(ConfigurableResource):
         response.raise_for_status()
         return response
 
-    def get(self, endpoint: str, params: dict | None = None):
-        response = self._request("GET", endpoint, params=params)
+    @staticmethod
+    def _parse_retry_after(response: requests.Response) -> float:
+        # Magento sends Retry-After as an integer number of seconds (not the
+        # HTTP-date form) on 429 responses; missing/unparseable means "no
+        # server-provided floor", so the exponential backoff alone applies.
+        header_value = response.headers.get("Retry-After")
+        if header_value is None:
+            return 0.0
+        try:
+            return float(header_value)
+        except ValueError:
+            return 0.0
+
+    def get(self, endpoint: str, params: dict | None = None, store_code: str | None = None):
+        response = self._request("GET", endpoint, params=params, store_code=store_code)
         return response.json()
 
     def get_paginated(
@@ -105,6 +159,7 @@ class MagentoResource(ConfigurableResource):
         params: dict | None = None,
         page_size: int = 1000,
         response_key: str = "items",
+        store_code: str | None = None,
     ) -> list:
         logger = get_dagster_logger()
         base_params = dict(params or {})
@@ -117,7 +172,7 @@ class MagentoResource(ConfigurableResource):
                 "searchCriteria[page_size]": page_size,
                 "searchCriteria[current_page]": page,
             }
-            response = self.get(endpoint, params=page_params)
+            response = self.get(endpoint, params=page_params, store_code=store_code)
             if not isinstance(response, dict):
                 logger.warning(
                     f"get_paginated({endpoint}): expected a dict response with "
@@ -142,14 +197,45 @@ class MagentoResource(ConfigurableResource):
         logger.info(f"Pagination complete for {endpoint}: {len(items)} items across {page} pages")
         return items
 
-    def post(self, endpoint: str, payload: dict | list) -> requests.Response:
-        return self._request("POST", endpoint, json=payload)
+    def post(
+        self, endpoint: str, payload: dict | list, store_code: str | None = None
+    ) -> requests.Response:
+        return self._request("POST", endpoint, json=payload, store_code=store_code)
 
-    def put(self, endpoint: str, payload: dict) -> requests.Response:
-        return self._request("PUT", endpoint, json=payload)
+    def put(
+        self, endpoint: str, payload: dict, store_code: str | None = None
+    ) -> requests.Response:
+        return self._request("PUT", endpoint, json=payload, store_code=store_code)
 
-    def delete(self, endpoint: str) -> requests.Response:
-        return self._request("DELETE", endpoint)
+    def delete(self, endpoint: str, store_code: str | None = None) -> requests.Response:
+        return self._request("DELETE", endpoint, store_code=store_code)
+
+    def submit_bulk(
+        self,
+        method: str,
+        bulk_endpoint: str,
+        items: list[dict],
+        store_code: str | None = None,
+    ) -> str:
+        # `method` is the HTTP verb of the sync endpoint being wrapped
+        # (POST to create, PUT for a bySku update, ...) - the async bulk
+        # route accepts the same verb under async/bulk/V1. The body is a
+        # bare JSON array, not {"items": [...]} - verified live against a
+        # 2.4.9 sandbox: a wrapped body is rejected with 400 "Request body
+        # must be an array".
+        response = self._request(
+            method,
+            bulk_endpoint,
+            store_code=store_code,
+            api_prefix="async/bulk/V1",
+            json=items,
+        )
+        return response.json()["bulk_uuid"]
+
+    def bulk_detailed_status(self, bulk_uuid: str) -> dict:
+        """Alias of get_bulk_status, named for the executor's wait_bulk
+        contract (which only needs one status call per poll)."""
+        return self.get_bulk_status(bulk_uuid)
 
     def upload_rows(
         self,

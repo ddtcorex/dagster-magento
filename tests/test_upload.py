@@ -94,4 +94,4 @@ def test_run_upload_includes_response_body_in_error_message():
 
 def test_upload_result_to_metadata():
     result = UploadResult(succeeded=10, failed=2, errors=[{"chunk_index": 0, "row_ids": ["X"], "status_code": 400, "message": "m"}])
-    assert result.to_metadata() == {"succeeded": 10, "failed": 2, "error_count": 1}
+    assert result.to_metadata() == {"succeeded": 10, "failed": 2, "pending": 0, "skipped_unchanged": 0, "error_count": 1}

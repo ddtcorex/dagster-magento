@@ -87,8 +87,9 @@ def test_get_refreshes_token_on_401_then_succeeds():
     assert data_requests[1].headers["Authorization"] == "Bearer fresh-token"
 
 
-def test_get_retries_once_on_503_then_succeeds():
+def test_get_retries_on_503_then_succeeds():
     resource = make_resource()
+    resource._sleep = lambda seconds: None  # tests must never actually sleep
     with requests_mock.Mocker() as m:
         m.post(
             "https://shop.test/rest/all/V1/integration/admin/token",

@@ -9,13 +9,27 @@ class UploadResult:
     succeeded: int
     failed: int
     errors: list = field(default_factory=list)
+    pending: int = 0
+    skipped_unchanged: int = 0
 
     def to_metadata(self) -> dict:
         return {
             "succeeded": self.succeeded,
             "failed": self.failed,
+            "pending": self.pending,
+            "skipped_unchanged": self.skipped_unchanged,
             "error_count": len(self.errors),
         }
+
+    def merge(self, other: "UploadResult") -> "UploadResult":
+        """Merge another UploadResult into this one, summing counts and concatenating errors."""
+        return UploadResult(
+            succeeded=self.succeeded + other.succeeded,
+            failed=self.failed + other.failed,
+            pending=self.pending + other.pending,
+            skipped_unchanged=self.skipped_unchanged + other.skipped_unchanged,
+            errors=self.errors + other.errors,
+        )
 
 
 def chunk_rows(rows: list, chunk_size: int) -> list:
