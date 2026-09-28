@@ -18,6 +18,7 @@ class FakeResolver:
         attribute_sets=None,
         attribute_groups=None,
         stores=None,
+        categories=None,
     ):
         self._attributes: dict[str, AttributeMeta] = dict(attributes or {})
         self._attribute_sets: dict[str, int] = dict(attribute_sets or {})
@@ -26,6 +27,8 @@ class FakeResolver:
             set_id: dict(groups) for set_id, groups in (attribute_groups or {}).items()
         }
         self._stores: dict[str, int] = dict(stores or {})
+        # {path: id}
+        self._categories: dict[str, int] = dict(categories or {})
         self.preloaded_codes: list[str] = []
 
     def preload_attributes(self, codes) -> None:
@@ -50,3 +53,16 @@ class FakeResolver:
         if code not in self._stores:
             raise ResolveError(f"unknown store view: {code}")
         return self._stores[code]
+
+    def ensure_categories(self, paths) -> dict[str, int]:
+        result = {}
+        for path in paths:
+            if path not in self._categories:
+                raise ResolveError(f"unknown category path: {path}")
+            result[path] = self._categories[path]
+        return result
+
+    def category_id(self, path: str) -> int:
+        if path not in self._categories:
+            raise ResolveError(f"unknown category path: {path}")
+        return self._categories[path]
