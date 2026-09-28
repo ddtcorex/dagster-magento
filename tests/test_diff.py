@@ -371,6 +371,8 @@ class StubResolver:
             "color": AttributeMeta(93, "color", "select", "int", "global", {"red": "12", "blue": "13"}),
             "sizes": AttributeMeta(94, "sizes", "multiselect", "varchar", "global", {"s": "1", "m": "2"}),
             "eco": AttributeMeta(95, "eco", "boolean", "int", "global", {}),
+            "news_from_date": AttributeMeta(96, "news_from_date", "date", "datetime", "website", {}),
+            "url_key": AttributeMeta(97, "url_key", "text", "varchar", "store", {}),
         }
 
     def attribute(self, code):
@@ -470,6 +472,21 @@ def test_product_select_ids_and_boolean_labels_compare_like_the_writer_sends_the
     row = product_row(attributes={"color": 12, "eco": "Yes"})
     assert product_matches_snapshot(row, product_snapshot(eco="1"), StubResolver())
     assert not product_matches_snapshot(row, product_snapshot(eco="0"), StubResolver())
+
+
+def test_product_dates_and_url_keys_compare_the_way_magento_stores_them():
+    # Verified live on 2.4.9: Magento reads a datetime attribute back with
+    # seconds ("2017-01-01 12:12:00") and stores url_key formatted
+    # (lowercase, runs of other characters as one "-"), so a rerun of
+    # an unchanged row compared unequal and was rewritten every time.
+    row = product_row(attributes={"news_from_date": "2017-01-01 12:12", "url_key": "TST Conf & Co"})
+    snapshot = product_snapshot(news_from_date="2017-01-01 12:12:00", url_key="tst-conf-co")
+    assert product_matches_snapshot(row, snapshot, StubResolver())
+
+    changed = product_snapshot(news_from_date="2017-01-02 12:12:00", url_key="tst-conf-co")
+    assert not product_matches_snapshot(row, changed, StubResolver())
+    unparseable = product_row(attributes={"news_from_date": "next week"})
+    assert not product_matches_snapshot(unparseable, snapshot, StubResolver())
 
 
 def price_snapshot():

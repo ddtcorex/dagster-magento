@@ -9,6 +9,7 @@ plain native Magento REST endpoints (`GET /V1/products`,
 These functions only ever read; they never write to Magento.
 """
 
+import re
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Callable, Literal
@@ -257,11 +258,24 @@ _UNSNAPSHOTTED_PRODUCT_PARTS = (
 )
 
 
+def _url_key(value) -> str:
+    # Magento stores url_key formatted: lowercase, every run of other
+    # characters as one "-" (non-ASCII transliteration is not mirrored, so
+    # such a key compares unequal and is conservatively rewritten).
+    return re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-")
+
+
 def _attribute_kind_value(meta, value):
     if meta.frontend_input == "select":
         return str(value)
     if meta.frontend_input == "multiselect":
         return normalize(value, "multiselect")
+    if meta.backend_type == "datetime":
+        # Read back with seconds ("2017-01-01 12:12:00"); raises ValueError
+        # on an unparseable value, which the caller reads as "changed".
+        return normalize(value, "datetime")
+    if meta.code == "url_key":
+        return _url_key(value)
     return normalize(value, "decimal" if meta.backend_type == "decimal" else "text")
 
 
@@ -320,7 +334,7 @@ def product_matches_snapshot(row, snap: dict, resolver) -> bool:
             current["category_ids"] = sorted(
                 int(link["category_id"]) for link in extension.get("category_links") or []
             )
-    except (ResolveError, KeyError):
+    except (ResolveError, KeyError, ValueError):
         return False
     return wanted == current
 
