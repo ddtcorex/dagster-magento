@@ -391,6 +391,33 @@ def test_products_rename_native_export_columns_to_attribute_codes():
     assert len(calls) == 2
 
 
+def test_products_drop_magento_derived_attributes_from_additional_attributes():
+    # has_options/required_options are recomputed by Magento on save and
+    # quantity_and_stock_status is stock (phase 1 writes stock through
+    # source items); the export still lists them in additional_attributes,
+    # and live on 2.4.9 they made every rerun compare as changed.
+    calls, warn = _warn_spy()
+    rows = [
+        (
+            2,
+            {
+                "sku": "S1",
+                "additional_attributes": (
+                    "has_options=1,quantity_and_stock_status=In Stock,required_options=0,color=Red"
+                ),
+            },
+        ),
+        (3, {"sku": "S2", "additional_attributes": "has_options=0"}),
+    ]
+
+    products, errors = catalog.products_from_rows(rows, warn=warn)
+
+    assert errors == []
+    assert products[0].attributes == {"color": "Red"}
+    assert products[1].attributes == {}
+    assert len(calls) == 3
+
+
 def test_products_associated_skus_become_grouped_links_with_position():
     rows = [
         (2, {"sku": "GROUPED1", "product_type": "grouped", "associated_skus": "SKU1=2.0000,SKU2"}),

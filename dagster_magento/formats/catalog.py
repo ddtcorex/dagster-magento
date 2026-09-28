@@ -118,6 +118,12 @@ _DROPPED_PRODUCT_COLUMNS = _STOCK_COLUMNS | frozenset(
     }
 )
 
+# Recomputed by Magento on save (has_options, required_options) or stock
+# (quantity_and_stock_status, written through source items in phase 1).
+# The export lists them, often inside additional_attributes; writing them
+# is ignored or overridden, so a rerun would never compare unchanged.
+_DERIVED_PRODUCT_ATTRIBUTES = ("has_options", "required_options", "quantity_and_stock_status")
+
 # Export column -> attribute code, the inverse of Magento's
 # Import\Product::$_fieldsMap for the columns that are plain attributes.
 # REST knows only the attribute codes. Values stay as exported: the
@@ -162,7 +168,11 @@ _VISIBILITY_TEXT = {
 
 
 def _is_dropped_product_column(column: str) -> bool:
-    return column in _DROPPED_PRODUCT_COLUMNS or column.startswith("attribute|")
+    return (
+        column in _DROPPED_PRODUCT_COLUMNS
+        or column in _DERIVED_PRODUCT_ATTRIBUTES
+        or column.startswith("attribute|")
+    )
 
 
 def _parse_visibility(value: str) -> int:
@@ -322,6 +332,9 @@ def _parse_row_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict
         except ValueError as error:
             return str(error)
 
+    for code in _DERIVED_PRODUCT_ATTRIBUTES:
+        if attributes.pop(code, None) is not None:
+            _warn_once(code, warn, dropped_seen)
     if "_bundle_shipment_type" in kwargs:
         attributes["shipment_type"] = kwargs.pop("_bundle_shipment_type")
     if image_fields:
