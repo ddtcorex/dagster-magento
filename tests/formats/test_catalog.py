@@ -241,6 +241,23 @@ def test_store_view_row_for_unknown_sku_is_row_error():
     assert "SKU1" in errors[0].row_ref
 
 
+def test_store_view_code_default_is_treated_as_global_not_a_store_row():
+    # Pins the real shape of the Firebear sample export
+    # (product_all_types.csv): every row, including the only one per sku,
+    # carries store_view_code "default" rather than leaving it blank.
+    # Without this, every product in that file would be rejected as a
+    # "store-view row for unknown sku". categories_from_rows already gives
+    # "default" the same global treatment for store_view.
+    rows = [(2, {"sku": "SKU1", "store_view_code": "default", "name": "Global Name"})]
+
+    products, errors = catalog.products_from_rows(rows)
+
+    assert errors == []
+    assert len(products) == 1
+    assert products[0].name == "Global Name"
+    assert products[0].store_values == {}
+
+
 def test_products_configurable_variations_build_attributes_and_order():
     rows = [
         (

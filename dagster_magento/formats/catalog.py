@@ -292,7 +292,11 @@ def _parse_row_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict
 
 def products_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[ProductRow], list[RowError]]:
     """Map native product rows onto ProductRow, folding store_view_code
-    rows into the matching global SKU's store_values."""
+    rows into the matching global SKU's store_values. `store_view_code`
+    "default" is treated the same as empty (a global row), mirroring
+    categories_from_rows' store_view handling - the Firebear sample export
+    (product_all_types.csv) tags every row, including the only global one
+    per sku, with store_view_code "default" rather than leaving it blank."""
     dropped_seen: set[str] = set()
     products: dict[str, ProductRow] = {}
     order: list[str] = []
@@ -306,7 +310,7 @@ def products_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[ProductRo
         if not sku:
             errors.append(RowError(row_ref=f"line {line}", message="missing sku"))
             continue
-        if store_view_code:
+        if store_view_code and store_view_code.lower() != "default":
             store_rows.append((line, sku, store_view_code, rest))
             continue
 
