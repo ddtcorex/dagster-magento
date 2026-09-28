@@ -480,6 +480,52 @@ def test_categories_from_rows_maps_path_and_attributes():
     }
 
 
+def test_categories_map_export_labels_to_native_values():
+    # The Firebear category export writes admin labels, which Magento
+    # rejects or stores as garbage (verified live on 2.4.9): Yes/No for
+    # int flags, "Product Name" for a sort code, "3 columns" for a layout
+    # code, m/d/y dates. Label-only references to records a catalog
+    # import cannot resolve (CMS block title, theme label, a remote image
+    # URL where Magento wants a media file) are dropped with a warning.
+    calls, warn = _warn_spy()
+    rows = [
+        (
+            2,
+            {
+                "name": "Default Category/A",
+                "custom_apply_to_products": "Yes",
+                "custom_use_parent_settings": "No",
+                "default_sort_by": "Product Name",
+                "available_sort_by": "position,name,price",
+                "display_mode": "Static block and products",
+                "page_layout": "3 columns",
+                "custom_design_from": "2/1/18",
+                "custom_design_to": "2018-02-28",
+                "landing_page": "Contact us info",
+                "custom_design": "Magento Luma",
+                "image": "https://example.test/logo.png",
+            },
+        ),
+        (3, {"name": "Default Category/B", "display_mode": "Products only", "default_sort_by": "Position"}),
+    ]
+
+    categories, errors = catalog.categories_from_rows(rows, warn=warn)
+
+    assert errors == []
+    assert categories[0].attributes == {
+        "custom_apply_to_products": 1,
+        "custom_use_parent_settings": 0,
+        "default_sort_by": "name",
+        "available_sort_by": "position,name,price",
+        "display_mode": "PRODUCTS_AND_PAGE",
+        "page_layout": "3columns",
+        "custom_design_from": "2018-02-01",
+        "custom_design_to": "2018-02-28",
+    }
+    assert categories[1].attributes == {"display_mode": "PRODUCTS", "default_sort_by": "position"}
+    assert len(calls) == 3
+
+
 def test_categories_dropped_columns_warn_once_each():
     calls, warn = _warn_spy()
     rows = [

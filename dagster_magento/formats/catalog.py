@@ -10,6 +10,7 @@ text-to-enum mapping, grouping sibling rows, column dropping) and let
 """
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Any
 
 from dagster import get_dagster_logger
@@ -381,8 +382,41 @@ def products_from_rows(
 
 # -- categories -----------------------------------------------------------------
 
-_DROPPED_CATEGORY_COLUMNS = frozenset({"entity_id", "url_path", "group"})
-_CATEGORY_YES_NO = frozenset({"include_in_menu", "is_active", "is_anchor"})
+# landing_page, custom_design and image carry admin labels or remote URLs
+# for records a catalog import cannot resolve natively (a CMS block by
+# title, a theme by label, a media file Magento expects on disk).
+_DROPPED_CATEGORY_COLUMNS = frozenset(
+    {"entity_id", "url_path", "group", "landing_page", "custom_design", "image"}
+)
+_CATEGORY_YES_NO = frozenset(
+    {"include_in_menu", "is_active", "is_anchor", "custom_apply_to_products", "custom_use_parent_settings"}
+)
+# Export labels -> native option codes, compared case-insensitively. A
+# value that is already a code (or unknown) passes through unchanged.
+_CATEGORY_LABELS = {
+    "display_mode": {
+        "products only": "PRODUCTS",
+        "static block only": "PAGE",
+        "static block and products": "PRODUCTS_AND_PAGE",
+    },
+    "page_layout": {
+        "empty": "empty",
+        "1 column": "1column",
+        "2 columns with left bar": "2columns-left",
+        "2 columns with right bar": "2columns-right",
+        "3 columns": "3columns",
+    },
+    "default_sort_by": {"position": "position", "product name": "name", "price": "price"},
+}
+_CATEGORY_DATES = frozenset({"custom_design_from", "custom_design_to"})
+
+
+def _category_date(value: str) -> str:
+    # The export writes dates as m/d/y; ISO dates pass through unchanged.
+    try:
+        return datetime.strptime(value, "%m/%d/%y").strftime("%Y-%m-%d")
+    except ValueError:
+        return value
 
 
 def _parse_category_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict[str, Any]:
@@ -396,6 +430,10 @@ def _parse_category_fields(row: dict[str, str], warn, dropped_seen: set[str]) ->
             continue
         if column in _CATEGORY_YES_NO:
             attributes[column] = 1 if value.lower() == "yes" else 0
+        elif column in _CATEGORY_LABELS:
+            attributes[column] = _CATEGORY_LABELS[column].get(value.lower(), value)
+        elif column in _CATEGORY_DATES:
+            attributes[column] = _category_date(value)
         else:
             attributes[column] = value
     return attributes
