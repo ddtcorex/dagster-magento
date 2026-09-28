@@ -51,6 +51,11 @@ class Resolver:
     this resolver creates something itself - callers never invalidate the
     cache by hand."""
 
+    # GET categories without `depth` stops at level 3 (verified live on
+    # 2.4.9), which hid deeper nodes and made the resolver re-create them.
+    # Far deeper than any real catalog tree; the call cost is per node.
+    CATEGORY_TREE_DEPTH = 1000
+
     def __init__(self, resource, root_category: str = "Default Category"):
         self.resource = resource
         self.root_category = root_category
@@ -242,7 +247,7 @@ class Resolver:
         # The tree's own top node (id 1, "Root Catalog" by default) is never
         # part of a path - paths start at its children, the store root(s)
         # such as "Default Category".
-        tree = self.resource.get("categories")
+        tree = self.resource.get("categories", params={"depth": self.CATEGORY_TREE_DEPTH})
         self._categories = {}
         for child in tree.get("children_data", []):
             self._walk_category_tree(child, prefix="")

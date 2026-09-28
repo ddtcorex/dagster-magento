@@ -287,6 +287,26 @@ def test_ensure_categories_creates_missing_nodes_parent_first():
     }
 
 
+def test_category_tree_is_read_with_an_explicit_depth():
+    # Verified live on 2.4.9: GET categories without `depth` stops at
+    # level 3 (Default Category/Women/Tops), so a level-4 node the
+    # resolver created in an earlier run looked missing and the create
+    # then failed with "URL key for specified store already exists".
+    resource = make_resource()
+    resolver = Resolver(resource)
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/categories",
+            json={"id": 1, "name": "Root Catalog", "children_data": [{"id": 2, "name": "Default Category"}]},
+        )
+        resolver.category_id("Default Category")
+
+    tree_request = m.request_history[-1]
+    assert tree_request.qs == {"depth": [str(Resolver.CATEGORY_TREE_DEPTH)]}
+    assert Resolver.CATEGORY_TREE_DEPTH >= 100
+
+
 def test_category_paths_without_root_get_root_prefix():
     resource = make_resource()
     resolver = Resolver(resource)
