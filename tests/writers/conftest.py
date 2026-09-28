@@ -8,7 +8,7 @@ Grows as later writer tasks need more of the real Resolver's surface -
 never duplicate what a plain assignment in a test already covers.
 """
 
-from dagster_magento.resolvers import AttributeMeta, ResolveError
+from dagster_magento.resolvers import AttributeMeta, ResolveError, normalize_label
 
 
 class FakeResolver:
@@ -19,6 +19,7 @@ class FakeResolver:
         attribute_groups=None,
         stores=None,
         categories=None,
+        websites=None,
     ):
         self._attributes: dict[str, AttributeMeta] = dict(attributes or {})
         self._attribute_sets: dict[str, int] = dict(attribute_sets or {})
@@ -29,6 +30,7 @@ class FakeResolver:
         self._stores: dict[str, int] = dict(stores or {})
         # {path: id}
         self._categories: dict[str, int] = dict(categories or {})
+        self._websites: dict[str, int] = dict(websites or {})
         self.preloaded_codes: list[str] = []
 
     def preload_attributes(self, codes) -> None:
@@ -38,6 +40,25 @@ class FakeResolver:
         if code not in self._attributes:
             raise ResolveError(f"unknown attribute: {code}")
         return self._attributes[code]
+
+    def option_id(self, code: str, label: str, create: bool = True) -> str:
+        meta = self.attribute(code)
+        key = normalize_label(label)
+        if key in meta.options:
+            return meta.options[key]
+        if not create:
+            raise ResolveError(f"unknown option '{label}' for attribute '{code}'")
+        # Mirrors the real resolver's "create then refresh": synthesize a
+        # new id and cache it on the same (mutable) options dict, so a
+        # later lookup for the same label is a cache hit, not a re-create.
+        new_id = str(1000 + len(meta.options))
+        meta.options[key] = new_id
+        return new_id
+
+    def website_id(self, code: str) -> int:
+        if code not in self._websites:
+            raise ResolveError(f"unknown website: {code}")
+        return self._websites[code]
 
     def attribute_set_id(self, name: str) -> int:
         name = name.strip()

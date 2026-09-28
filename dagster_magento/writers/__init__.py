@@ -15,7 +15,10 @@ from dagster_magento.operation import Operation, RowError
 class PlanResult:
     """The output of every writer: the operations it planned, plus a
     RowError for every row it could not plan at all (for example a
-    reference the resolver cannot resolve)."""
+    reference the resolver cannot resolve), plus the SKU/ref of every row a
+    behavior deliberately left untouched (for example create_only meeting
+    a SKU that already exists)."""
 
     operations: list[Operation] = field(default_factory=list)
     failed: list[RowError] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
