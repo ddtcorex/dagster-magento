@@ -7,6 +7,7 @@ delegated to `writers/product_types.py:apply_type_parts` so this module
 only ever plans the fields every product type shares.
 """
 
+import copy
 import urllib.parse
 from typing import Any
 
@@ -147,34 +148,57 @@ def _attribute_set_id(attribute_set: str, resolver) -> int:
     return resolver.attribute_set_id(attribute_set)
 
 
-def _main_operation(sku: str, body: dict[str, Any], is_existing: bool) -> Operation:
-    payload = {"product": body}
-    if not is_existing:
-        return Operation(
-            method="POST",
-            endpoint="products",
-            payload=payload,
-            row_refs=(sku,),
-            bulk=BulkSpec("products", payload),
-        )
+def _product_operation(
+    method: str,
+    endpoint: str,
+    sku: str,
+    body: dict[str, Any],
+    bulk_endpoint: str,
+    bulk_includes_sku: bool,
+    store_code: str | None = None,
+) -> Operation:
+    """Build one Operation plus its paired BulkSpec from a single `body`
+    dict, without either side ever sharing a dict object with the other -
+    each is its own deep copy, per the immutability contract in
+    operation.py ("writers must build a fresh dict per operation ...
+    BulkSpec gets its own fresh dict too")."""
+    payload = {"product": copy.deepcopy(body)}
+    bulk_body = copy.deepcopy(body)
+    bulk_payload = {"sku": sku, "product": bulk_body} if bulk_includes_sku else {"product": bulk_body}
     return Operation(
-        method="PUT",
-        endpoint=f"products/{_quote_sku(sku)}",
+        method=method,
+        endpoint=endpoint,
         payload=payload,
         row_refs=(sku,),
-        bulk=BulkSpec("products/bySku", {"sku": sku, "product": body}),
+        store_code=store_code,
+        bulk=BulkSpec(bulk_endpoint, bulk_payload),
+    )
+
+
+def _main_operation(sku: str, body: dict[str, Any], is_existing: bool) -> Operation:
+    if not is_existing:
+        return _product_operation(
+            "POST", "products", sku, body, bulk_endpoint="products", bulk_includes_sku=False
+        )
+    return _product_operation(
+        "PUT",
+        f"products/{_quote_sku(sku)}",
+        sku,
+        body,
+        bulk_endpoint="products/bySku",
+        bulk_includes_sku=True,
     )
 
 
 def _disable_operation(sku: str) -> Operation:
     body = {"sku": sku, "status": 2}
-    payload = {"product": body}
-    return Operation(
-        method="PUT",
-        endpoint=f"products/{_quote_sku(sku)}",
-        payload=payload,
-        row_refs=(sku,),
-        bulk=BulkSpec("products/bySku", {"sku": sku, "product": body}),
+    return _product_operation(
+        "PUT",
+        f"products/{_quote_sku(sku)}",
+        sku,
+        body,
+        bulk_endpoint="products/bySku",
+        bulk_includes_sku=True,
     )
 
 
@@ -189,15 +213,15 @@ def _store_value_operations(row: ProductRow, resolver) -> list[Operation]:
             else:
                 custom_attribute_values[key] = value
         body["custom_attributes"] = _custom_attributes(custom_attribute_values, resolver)
-        payload = {"product": body}
         operations.append(
-            Operation(
-                method="PUT",
-                endpoint=f"products/{_quote_sku(row.sku)}",
-                payload=payload,
-                row_refs=(row.sku,),
+            _product_operation(
+                "PUT",
+                f"products/{_quote_sku(row.sku)}",
+                row.sku,
+                body,
+                bulk_endpoint="products/bySku",
+                bulk_includes_sku=True,
                 store_code=store_code,
-                bulk=BulkSpec("products/bySku", {"sku": row.sku, "product": body}),
             )
         )
     return operations

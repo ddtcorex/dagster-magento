@@ -246,6 +246,51 @@ def test_unresolvable_option_fails_only_that_row():
     assert result.operations[0].row_refs == ("GOOD",)
 
 
+def test_operation_and_bulk_payloads_never_alias():
+    """Every builder (create, update, disable, store-value) must hand back
+    an Operation.payload and a BulkSpec.payload that are independent dict
+    objects, down to the nested "product" dict and its nested lists - the
+    module contract in operation.py forbids a writer from sharing one dict
+    across two Operations/BulkSpecs, and equality-based assertions alone
+    cannot see an aliasing bug like this."""
+    color = AttributeMeta(
+        id=1, code="color", frontend_input="text", backend_type="varchar",
+        scope="global", options={},
+    )
+    resolver = _resolver(attributes={"color": color})
+    row = ProductRow(
+        sku="A1",
+        attribute_set="Default",
+        name="Widget",
+        websites=["base"],
+        attributes={"color": "red"},
+        store_values={"fr": {"name": "Widget FR", "color": "rouge"}},
+    )
+
+    create_result = plan_products([row], resolver, existing=set())
+    update_result = plan_products([row], resolver, existing={"A1"})
+    disable_result = plan_products([row], resolver, existing={"A1"}, behavior="disable")
+
+    create_op = create_result.operations[0]
+    update_op = update_result.operations[0]
+    disable_op = disable_result.operations[0]
+    store_op = next(op for op in update_result.operations if op.store_code == "fr")
+
+    for op in (create_op, update_op, disable_op, store_op):
+        assert op.payload is not op.bulk.payload
+        assert op.payload["product"] is not op.bulk.payload["product"]
+
+    # Nested lists (custom_attributes) must not be shared either.
+    assert (
+        create_op.payload["product"]["custom_attributes"]
+        is not create_op.bulk.payload["product"]["custom_attributes"]
+    )
+    assert (
+        store_op.payload["product"]["custom_attributes"]
+        is not store_op.bulk.payload["product"]["custom_attributes"]
+    )
+
+
 def test_reserved_keys_in_attributes_fail_the_row():
     """attributes keys that shadow writer-owned top-level payload names
     (e.g. "price", "sku") are a row error naming the offending keys."""
