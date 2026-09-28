@@ -24,6 +24,14 @@ RESERVED_CATEGORY_KEYS = frozenset({"id", "parent_id", "path", "name"})
 # would shadow the writer-owned category identity and tree position.
 RESERVED_CATEGORY_STORE_KEYS = frozenset({"id", "parent_id", "path"})
 
+# Writable CategoryInterface fields; they sit at the top of the payload.
+# Every other key is an EAV attribute and goes into custom_attributes:
+# PUT categories/{id} rejects url_key, image, ... at the top level with
+# "field is not supported" (verified live on 2.4.9).
+CATEGORY_TOP_LEVEL_KEYS = frozenset(
+    {"name", "is_active", "position", "include_in_menu", "available_sort_by"}
+)
+
 
 def plan_categories(rows: list[CategoryRow], resolver) -> PlanResult:
     """Plan category upserts and store-specific updates.
@@ -104,7 +112,7 @@ def plan_categories(rows: list[CategoryRow], resolver) -> PlanResult:
                 Operation(
                     method="PUT",
                     endpoint=f"categories/{category_id}",
-                    payload={"category": {"id": category_id, **row.attributes}},
+                    payload={"category": _category_body(category_id, row.attributes)},
                     row_refs=(row.path,),
                 )
             )
@@ -115,10 +123,26 @@ def plan_categories(rows: list[CategoryRow], resolver) -> PlanResult:
                 Operation(
                     method="PUT",
                     endpoint=f"categories/{category_id}",
-                    payload={"category": {"id": category_id, **localized}},
+                    payload={"category": _category_body(category_id, localized)},
                     row_refs=(row.path,),
                     store_code=store_code,
                 )
             )
 
     return PlanResult(operations=operations, failed=failed)
+
+
+def _category_body(category_id: int, values: dict[str, Any]) -> dict[str, Any]:
+    body: dict[str, Any] = {"id": category_id}
+    custom_attributes = []
+    for key, value in values.items():
+        if key not in CATEGORY_TOP_LEVEL_KEYS:
+            custom_attributes.append({"attribute_code": key, "value": value})
+        elif key == "available_sort_by" and isinstance(value, str):
+            # The DTO types it as string[]; a comma string is rejected.
+            body[key] = [part.strip() for part in value.split(",") if part.strip()]
+        else:
+            body[key] = value
+    if custom_attributes:
+        body["custom_attributes"] = custom_attributes
+    return body

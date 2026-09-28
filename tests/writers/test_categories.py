@@ -26,13 +26,17 @@ def test_categories_are_ensured_before_attribute_updates():
     assert men_op.endpoint == "categories/3"
     assert men_op.row_refs == ("Default Category/Men",)
     assert men_op.store_code is None
-    assert men_op.payload == {"category": {"id": 3, "description": "Men"}}
+    assert men_op.payload == {
+        "category": {"id": 3, "custom_attributes": [{"attribute_code": "description", "value": "Men"}]}
+    }
 
     women_op = result.operations[1]
     assert women_op.method == "PUT"
     assert women_op.endpoint == "categories/4"
     assert women_op.row_refs == ("Default Category/Women",)
-    assert women_op.payload == {"category": {"id": 4, "description": "Women"}}
+    assert women_op.payload == {
+        "category": {"id": 4, "custom_attributes": [{"attribute_code": "description", "value": "Women"}]}
+    }
 
 
 def test_category_store_values_use_store_code_and_minimal_payload():
@@ -68,7 +72,13 @@ def test_category_store_values_use_store_code_and_minimal_payload():
     assert en_op.endpoint == "categories/5"
     assert en_op.store_code == "en"
     assert en_op.row_refs == ("Default Category/Shoes",)
-    assert en_op.payload == {"category": {"id": 5, "name": "Shoes", "description": "Footwear"}}
+    assert en_op.payload == {
+        "category": {
+            "id": 5,
+            "name": "Shoes",
+            "custom_attributes": [{"attribute_code": "description", "value": "Footwear"}],
+        }
+    }
 
 
 def test_ensure_failure_marks_row_failed():
@@ -148,3 +158,38 @@ def test_localized_name_is_allowed_but_id_is_rejected():
 
     # No operations emitted
     assert len(result.operations) == 0
+
+
+def test_category_payload_keeps_dto_fields_top_level_and_the_rest_as_custom_attributes():
+    # Verified live on 2.4.9: PUT categories/{id} rejects EAV attributes
+    # such as image or url_key at the top level ("field is not
+    # supported"); only CategoryInterface fields live there, and
+    # available_sort_by is a string array.
+    resolver = FakeResolver(categories={"Default Category/Men": 3})
+    row = CategoryRow(
+        path="Default Category/Men",
+        attributes={
+            "is_active": 1,
+            "include_in_menu": 0,
+            "position": "7",
+            "available_sort_by": "position, name",
+            "url_key": "men",
+            "is_anchor": 1,
+        },
+    )
+
+    result = plan_categories([row], resolver)
+
+    assert result.operations[0].payload == {
+        "category": {
+            "id": 3,
+            "is_active": 1,
+            "include_in_menu": 0,
+            "position": "7",
+            "available_sort_by": ["position", "name"],
+            "custom_attributes": [
+                {"attribute_code": "url_key", "value": "men"},
+                {"attribute_code": "is_anchor", "value": 1},
+            ],
+        }
+    }
