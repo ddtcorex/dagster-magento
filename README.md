@@ -368,20 +368,45 @@ the target needs:
 - indexers in `schedule` mode and cron running, so the price and inventory
   mviews catch up after the writes;
 - a store view created **before** the consumers start, because a running
-  consumer caches the store list.
+  consumer caches the store list;
+- on MariaDB, a `READ COMMITTED` session transaction isolation level. See
+  the note below: under MariaDB's default `REPEATABLE READ` a bulk can lose
+  operations, and no client can recover them.
 
 Without a consumer, bulk operations stay at status `4` and are reported as
 `pending` after the timeout (600 s by default) with a log line naming the
 consumer. `pending` is never counted as success.
 
-That also covers the opposite failure: a consumer that is running but never
-executes an operation. On the Magento 2.4.9 test sandbox a variable subset
-of the published operations was measured to be dropped by the consumer
-(publish 20, deliver 20, ack 14 for one 18-operation bulk, with the lost
-rows left at status 4 and nothing logged by Magento), and bulk mode reports
-exactly those rows as `pending`. See
+A consumer that is running can still lose an operation, and Magento keeps
+the reason out of its own logs. Magento publishes a bulk on the broker
+before it commits the rows that bulk belongs to:
+`MassSchedule::publishMass` publishes through
+`BulkManagement::scheduleBulk` and commits, and only then does
+`SaveMultipleOperations::execute` insert `magento_operation`. A consumer
+that reaches its row while that insert is still uncommitted fails on
+MariaDB with `SQLSTATE[HY000]: General error: 1020 Record has changed since
+last read in table 'magento_operation'`, and
+`MassConsumerEnvelopeCallback::execute` answers `reject($message, false)`:
+the message is dropped without requeue, the row keeps status `4` with
+`started_at` NULL, and each loss shows up in `var/log/system.log` as one
+`Message has been rejected: ... 1020 ...` line. Bulk mode reports those
+rows as `pending`, which is the honest answer, because the operation will
+never run. Setting the session isolation to `READ COMMITTED` removes the
+race:
+
+```php
+// app/etc/env.php, Magento passes driver_options straight to PDO.
+// 1002 is PDO::MYSQL_ATTR_INIT_COMMAND.
+$config['db']['connection']['default']['driver_options'][1002] =
+    'SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED';
+```
+
+Measured on the Magento 2.4.9 sandbox with MariaDB 11.8 and four consumers:
+30 of 88 published operations were lost that way before, and none were lost
+with the setting in place. See
 `tests/live/test_catalog_e2e.py::test_same_catalog_imports_in_bulk_mode`
-for the measurement.
+for the measurement, and `scripts/sandbox.sh` for the sandbox that applies
+it.
 
 ## File adapters
 

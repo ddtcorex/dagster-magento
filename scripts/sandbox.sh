@@ -13,6 +13,12 @@
 #   scripts/sandbox.sh consumers               # start 4 async.operations.all consumers
 #   scripts/sandbox.sh env                     # print MAGENTO_* vars for later tasks
 #   scripts/sandbox.sh cron-run                 # run bin/magento cron:run twice
+#
+# `up` also writes the two settings the async bulk path needs, both into
+# app/etc/env.php: cron_consumers_runner (no cron-managed consumers) and a
+# READ COMMITTED session transaction isolation level, without which MariaDB
+# rejects and drops a bulk operation whose message outruns its own row. See
+# write_db_isolation_config below for the measurement.
 set -euo pipefail
 
 DEFAULT_VERSION="2.4.9"
@@ -75,6 +81,44 @@ PHP
   rm -f "$helper"
 }
 
+write_db_isolation_config() {
+  # Magento publishes an async bulk on the broker before it commits the rows
+  # that bulk belongs to: MassSchedule::publishMass calls
+  # BulkManagement::scheduleBulk (which publishes and commits the bulk
+  # summary) and only then SaveMultipleOperations::execute inserts
+  # magento_operation. A consumer can therefore reach its row while that
+  # insert is still uncommitted, and on MariaDB under its default
+  # REPEATABLE READ the consumer's
+  # `UPDATE magento_operation SET started_at = ...` fails with SQLSTATE 1020
+  # "Record has changed since last read in table 'magento_operation'".
+  # MassConsumerEnvelopeCallback::execute catches that exception and calls
+  # reject($message, false), which drops the message without requeue: the row
+  # keeps status 4 (open) forever and the library can only report it pending.
+  #
+  # READ COMMITTED removes the race. Measured on this sandbox (Magento 2.4.9,
+  # MariaDB 11.8) with the operation insert held open for a forced 400 ms:
+  # 4 of 20 operations dropped and 4 rejection lines per run before, 0 of 20
+  # over three runs after.
+  #
+  # 1002 is PDO::MYSQL_ATTR_INIT_COMMAND, taken verbatim from
+  # app/etc/env.php's driver_options, which Magento passes straight to the
+  # PDO constructor. The literal number keeps the generated env.php
+  # independent of the PDO class being loaded by whatever reads it.
+  local helper="$PROJECT_DIR/var/dagster-db-isolation.php"
+  mkdir -p "$PROJECT_DIR/var"
+  cat > "$helper" <<'PHP'
+<?php
+$path = __DIR__ . '/../app/etc/env.php';
+$config = include $path;
+$config['db']['connection']['default']['driver_options'][1002] =
+    'SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED';
+file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
+echo "db transaction isolation updated\n";
+PHP
+  ( cd "$PROJECT_DIR" && govard shell -c 'php var/dagster-db-isolation.php' )
+  rm -f "$helper"
+}
+
 cmd_up() {
   parse_version "$@"
 
@@ -117,6 +161,7 @@ cmd_up() {
       --admin-lastname=Sandbox )
 
   write_cron_consumers_config
+  write_db_isolation_config
 
   log "sandbox ready at https://$DOMAIN"
 }

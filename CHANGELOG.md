@@ -3,6 +3,20 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- The live bulk test no longer loses operations on the sandbox. Magento
+  publishes an async bulk on the broker before it commits the rows that bulk
+  belongs to, so a consumer can reach its row while the insert is still
+  uncommitted; on MariaDB under its default `REPEATABLE READ` that consumer
+  fails with SQLSTATE 1020 ("Record has changed since last read") and
+  Magento drops the message without requeue, leaving the operation open
+  forever. `scripts/sandbox.sh` now sets the session transaction isolation
+  to `READ COMMITTED`, and the README documents the setting for MariaDB
+  deployments. No library code changed.
+
 ## [0.2.0] - 2026-09-28
 
 Native catalog import. The v0.1.0 public API is unchanged and still works.
