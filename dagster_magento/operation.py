@@ -15,14 +15,28 @@ def _make_hashable(obj):
 
 @dataclass(frozen=True)
 class BulkSpec:
-    """Specification for a bulk API operation."""
+    """Specification for a bulk API operation.
+
+    The payload dict is treated as immutable once built. Callers must not
+    mutate the dict after construction; executors must copy before wrapping
+    or merging chunks.
+    """
     endpoint: str
     payload: dict
+
+    def __hash__(self):
+        return hash((self.endpoint, _make_hashable(self.payload)))
 
 
 @dataclass(frozen=True)
 class Operation:
-    """A REST operation to be sent to Magento."""
+    """A REST operation to be sent to Magento.
+
+    The payload dict is treated as immutable once built. Callers must not
+    mutate the dict after construction; writers must build a fresh dict
+    per operation and never share one dict across operations; executors
+    must copy before wrapping or merging chunks.
+    """
     method: str
     endpoint: str
     payload: dict | None

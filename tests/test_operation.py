@@ -79,3 +79,59 @@ def test_operation_is_hashable_and_frozen():
     )
     assert op == op2
     assert hash(op) == hash(op2)
+
+
+def test_bulk_spec_is_hashable():
+    spec = BulkSpec(endpoint="products/bySku", payload={"sku": "A"})
+
+    # Test hashable
+    specs_set = {spec}
+    assert spec in specs_set
+
+    # Two identical specs hash equal and dedupe in a set
+    spec2 = BulkSpec(endpoint="products/bySku", payload={"sku": "A"})
+    assert spec == spec2
+    assert hash(spec) == hash(spec2)
+    assert {spec, spec2} == {spec}  # dedupes
+
+
+def test_operation_with_bulk_is_hashable():
+    bulk = BulkSpec(endpoint="products/bySku", payload={"sku": "A"})
+    op = Operation(
+        method="POST",
+        endpoint="async/bulk/V1/products/bySku",
+        payload=None,
+        row_refs=("row1", "row2"),
+        bulk=bulk,
+    )
+
+    # Test hashable
+    ops_set = {op}
+    assert op in ops_set
+
+    # Two operations with identical bulk specs hash equal
+    bulk2 = BulkSpec(endpoint="products/bySku", payload={"sku": "A"})
+    op2 = Operation(
+        method="POST",
+        endpoint="async/bulk/V1/products/bySku",
+        payload=None,
+        row_refs=("row1", "row2"),
+        bulk=bulk2,
+    )
+    assert op == op2
+    assert hash(op) == hash(op2)
+
+
+def test_row_error_is_frozen_and_comparable():
+    err = RowError(row_ref="row1", message="error message")
+
+    # Test frozen
+    with pytest.raises(AttributeError):
+        err.row_ref = "row2"
+
+    # Test comparable
+    err2 = RowError(row_ref="row1", message="error message")
+    assert err == err2
+
+    err3 = RowError(row_ref="row1", message="different message")
+    assert err != err3
