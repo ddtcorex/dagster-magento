@@ -236,6 +236,49 @@ def test_snapshot_source_items_keys_by_source_code_and_sku():
         ("warehouse2", "A"): (0.0, 0),
     }
 
+    # get_paginated wraps the sku `in` filter this function builds with its
+    # own searchCriteria[page_size]/[current_page] convention - assert both
+    # halves so a regression in either side is caught here.
+    request = [r for r in m.request_history if r.path.endswith("/v1/inventory/source-items")][0]
+    params = request_params(request)
+    assert params["searchCriteria[filterGroups][0][filters][0][field]"] == "sku"
+    assert params["searchCriteria[filterGroups][0][filters][0][value]"] == "A"
+    assert params["searchCriteria[filterGroups][0][filters][0][condition_type]"] == "in"
+    assert params["searchCriteria[page_size]"] == "200"
+    assert params["searchCriteria[current_page]"] == "1"
+
+
+def test_snapshot_source_items_follows_pages():
+    resource = make_resource()
+    first_page = [
+        {"sku": f"sku-{i}", "source_code": "default", "quantity": float(i), "status": 1}
+        for i in range(200)
+    ]
+    second_page = [
+        {"sku": "sku-200", "source_code": "default", "quantity": 3.0, "status": 1},
+        {"sku": "sku-201", "source_code": "default", "quantity": 0.0, "status": 0},
+    ]
+
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/inventory/source-items",
+            [
+                {"json": {"items": first_page}},
+                {"json": {"items": second_page}},
+            ],
+        )
+        result = snapshot_source_items(resource, ["irrelevant-for-this-test"])
+
+    assert len(result) == 202
+    assert result[("default", "sku-0")] == (0.0, 1)
+    assert result[("default", "sku-201")] == (0.0, 0)
+
+    requests = [r for r in m.request_history if r.path.endswith("/v1/inventory/source-items")]
+    assert len(requests) == 2
+    assert request_params(requests[0])["searchCriteria[current_page]"] == "1"
+    assert request_params(requests[1])["searchCriteria[current_page]"] == "2"
+
 
 def test_snapshot_media_returns_the_bare_list_response():
     resource = make_resource()

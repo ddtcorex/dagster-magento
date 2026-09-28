@@ -21,6 +21,7 @@ from dagster_magento.upload import chunk_rows
 # use the larger 1000-row chunk size shared with upload_rows.
 _URL_FILTER_CHUNK_SIZE = 50
 _PRICE_CHUNK_SIZE = 1000
+_SOURCE_ITEMS_PAGE_SIZE = 200
 
 
 def normalize(value, kind: Literal["decimal", "datetime", "multiselect", "text", "int"]):
@@ -160,27 +161,25 @@ def snapshot_prices(resource, skus: list[str]) -> dict[str, dict]:
 
 def snapshot_source_items(resource, skus: list[str]) -> dict[tuple[str, str], tuple[float, int]]:
     """Fetch `GET /V1/inventory/source-items` for `skus`, keyed on
-    `(source_code, sku) -> (quantity, status)`."""
+    `(source_code, sku) -> (quantity, status)`.
+
+    Pagination is delegated to `MagentoResource.get_paginated` (the same
+    `searchCriteria[page_size]`/`[current_page]` loop every other paged
+    endpoint in this package uses) rather than hand-rolled here.
+    """
     result: dict[tuple[str, str], tuple[float, int]] = {}
 
-    for condition_type, value, chunk in _sku_filter_chunks(skus, _URL_FILTER_CHUNK_SIZE):
-        page = 1
-        page_size = 200
-        while True:
-            params = {
-                "searchCriteria[filterGroups][0][filters][0][field]": "sku",
-                "searchCriteria[filterGroups][0][filters][0][value]": value,
-                "searchCriteria[filterGroups][0][filters][0][condition_type]": condition_type,
-                "searchCriteria[pageSize]": page_size,
-                "searchCriteria[currentPage]": page,
-            }
-            response = resource.get("inventory/source-items", params=params)
-            items = response.get("items", [])
-            for item in items:
-                result[(item["source_code"], item["sku"])] = (item["quantity"], item["status"])
-            if len(items) < page_size:
-                break
-            page += 1
+    for condition_type, value, _chunk in _sku_filter_chunks(skus, _URL_FILTER_CHUNK_SIZE):
+        params = {
+            "searchCriteria[filterGroups][0][filters][0][field]": "sku",
+            "searchCriteria[filterGroups][0][filters][0][value]": value,
+            "searchCriteria[filterGroups][0][filters][0][condition_type]": condition_type,
+        }
+        items = resource.get_paginated(
+            "inventory/source-items", params=params, page_size=_SOURCE_ITEMS_PAGE_SIZE
+        )
+        for item in items:
+            result[(item["source_code"], item["sku"])] = (item["quantity"], item["status"])
 
     return result
 
