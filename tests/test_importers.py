@@ -244,6 +244,25 @@ def test_products_link_children_after_parents():
     assert last_product < first_link
 
 
+def test_existing_configurable_links_only_children_not_yet_attached():
+    # Verified live on 2.4.9: POST configurable-products/{sku}/child for a
+    # child that is already linked answers 400 "The product is already
+    # attached.", so a rerun failed every configurable row.
+    parent = {**existing_product("P1", 5), "type_id": "configurable"}
+    rows = [configurable_row("P1", [("C1", "Red"), ("C2", "Blue")])]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m, products=[parent])
+        m.put(f"{BASE}/products/P1", json={})
+        m.post(f"{BASE}/configurable-products/P1/options", json=1)
+        m.get(f"{BASE}/configurable-products/P1/children", json=[{"sku": "C1"}])
+        m.post(f"{BASE}/configurable-products/P1/child", json=True)
+        result = import_products(make_resource(), rows)
+
+    assert result == UploadResult(succeeded=1, failed=0)
+    child_posts = [r.json() for r in writes(m) if r.url.endswith("/child")]
+    assert child_posts == [{"childSku": "C2"}]
+
+
 def test_plan_skipped_rows_count_as_skipped_unchanged():
     existing = [{"sku": "A", "type_id": "simple", "attribute_set_id": 4, "custom_attributes": []}]
     with requests_mock.Mocker() as m:

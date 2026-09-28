@@ -289,8 +289,28 @@ def import_products(
     follow_ups = [
         op for op in plan.operations if op not in parents and not set(op.row_refs) & unsettled
     ]
+    follow_ups = _drop_attached_children(resource, follow_ups, existing=set(snapshot))
     result = result.merge(execute(resource, follow_ups, mode=mode))
     return _complete([row.sku for row in changed], plan, result, invalid, skipped, fail_on_error_ratio)
+
+
+def _drop_attached_children(resource, operations: list, existing: set[str]) -> list:
+    """Drop configurable child links that already exist: Magento answers a
+    re-link with 400 "The product is already attached." (verified live on
+    2.4.9). Only parents that existed before this run can have children,
+    so a new parent costs no extra GET."""
+    attached: dict[str, set[str]] = {}
+    kept = []
+    for op in operations:
+        parent = op.row_refs[0]
+        if op.endpoint.endswith("/child") and parent in existing:
+            if parent not in attached:
+                children = resource.get(f"configurable-products/{urllib.parse.quote(parent, safe='')}/children")
+                attached[parent] = {child["sku"] for child in children}
+            if op.payload["childSku"] in attached[parent]:
+                continue
+        kept.append(op)
+    return kept
 
 
 # -- prices ---------------------------------------------------------------------
