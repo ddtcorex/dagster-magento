@@ -56,6 +56,7 @@ class Resolver:
         self.root_category = root_category
         self._attributes: dict[str, AttributeMeta] = {}
         self._attribute_sets: dict[str, int] = {}
+        self._attribute_groups: dict[int, dict[str, int]] = {}
         self._websites: dict[str, int] = {}
         self._stores: dict[str, int] = {}
         self._categories: dict[str, int] = {}
@@ -154,6 +155,37 @@ class Resolver:
             # Exact, case-sensitive match after strip() - Magento allows
             # sibling sets differing only in case.
             self._attribute_sets[item["attribute_set_name"].strip()] = item["attribute_set_id"]
+
+    def attribute_group_id(self, set_id: int, name: str) -> int | None:
+        """Look up a group's id within one attribute set by exact name
+        (after strip), or None when the set has no such group yet - a
+        writer reads None as "this group still needs to be created".
+        Loaded once per set_id and cached; call refresh_attribute_sets()
+        to see a group created since the last load."""
+        name = name.strip()
+        if set_id not in self._attribute_groups:
+            self._load_attribute_groups(set_id)
+        return self._attribute_groups[set_id].get(name)
+
+    def _load_attribute_groups(self, set_id: int) -> None:
+        params = {
+            "searchCriteria[filterGroups][0][filters][0][field]": "attribute_set_id",
+            "searchCriteria[filterGroups][0][filters][0][value]": set_id,
+            "searchCriteria[filterGroups][0][filters][0][condition_type]": "eq",
+        }
+        response = self.resource.get("products/attribute-sets/groups/list", params=params)
+        self._attribute_groups[set_id] = {
+            item["attribute_group_name"].strip(): item["attribute_group_id"]
+            for item in response.get("items", [])
+        }
+
+    def refresh_attribute_sets(self) -> None:
+        """Clear the attribute-set cache and every per-set group cache, so
+        the next attribute_set_id()/attribute_group_id() call re-fetches
+        from Magento. Used between import passes once a set or group that
+        did not exist before has just been created."""
+        self._attribute_sets = {}
+        self._attribute_groups = {}
 
     # -- websites and store views ------------------------------------------------
 

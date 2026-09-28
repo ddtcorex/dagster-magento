@@ -470,3 +470,73 @@ def test_two_paths_sharing_new_parent_create_it_once():
     assert create_requests[2].json() == {
         "category": {"parent_id": 30, "name": "B", "is_active": True, "include_in_menu": True}
     }
+
+
+def test_attribute_group_id_is_cached_per_set():
+    resource = make_resource()
+    resolver = Resolver(resource)
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/products/attribute-sets/groups/list",
+            json={
+                "items": [
+                    {
+                        "attribute_group_id": 7,
+                        "attribute_group_name": "General",
+                        "attribute_set_id": 4,
+                    },
+                    {
+                        "attribute_group_id": 8,
+                        "attribute_group_name": "Prices",
+                        "attribute_set_id": 4,
+                    },
+                ],
+                "total_count": 2,
+            },
+        )
+        assert resolver.attribute_group_id(4, "General") == 7
+        assert resolver.attribute_group_id(4, "Prices") == 8
+        assert resolver.attribute_group_id(4, "Ghost") is None
+
+    group_requests = [
+        r for r in m.request_history if r.path.endswith("/attribute-sets/groups/list")
+    ]
+    assert len(group_requests) == 1  # cached per set_id after the first lookup
+
+    query = group_requests[0].qs
+    assert query["searchcriteria[filtergroups][0][filters][0][field]"] == ["attribute_set_id"]
+    assert query["searchcriteria[filtergroups][0][filters][0][value]"] == ["4"]
+    assert query["searchcriteria[filtergroups][0][filters][0][condition_type]"] == ["eq"]
+
+
+def test_refresh_attribute_sets_clears_caches():
+    resource = make_resource()
+    resolver = Resolver(resource)
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/eav/attribute-sets/list",
+            json={
+                "items": [{"attribute_set_id": 4, "attribute_set_name": "Default"}],
+                "total_count": 1,
+            },
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/products/attribute-sets/groups/list",
+            json={"items": [], "total_count": 0},
+        )
+        assert resolver.attribute_set_id("Default") == 4
+        resolver.attribute_group_id(4, "General")
+
+        resolver.refresh_attribute_sets()
+
+        assert resolver.attribute_set_id("Default") == 4
+        resolver.attribute_group_id(4, "General")
+
+    set_requests = [r for r in m.request_history if r.path.endswith("/eav/attribute-sets/list")]
+    group_requests = [
+        r for r in m.request_history if r.path.endswith("/attribute-sets/groups/list")
+    ]
+    assert len(set_requests) == 2  # re-fetched once after refresh_attribute_sets
+    assert len(group_requests) == 2  # group cache cleared alongside the set cache
