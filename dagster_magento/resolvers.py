@@ -190,10 +190,21 @@ class Resolver:
         return self._categories[normalized]
 
     def _normalize_category_path(self, path: str) -> str:
-        path = path.strip("/")
-        if path == self.root_category or path.startswith(f"{self.root_category}/"):
-            return path
-        return f"{self.root_category}/{path}"
+        segments = self._split_segments(path)
+        root_segments = self._split_segments(self.root_category)
+        if segments[: len(root_segments)] == root_segments:
+            return "/".join(segments)
+        return "/".join(root_segments + segments)
+
+    @staticmethod
+    def _split_segments(path: str) -> list[str]:
+        # Exact-after-strip matching applies per segment, not to the path
+        # as a whole: strip whitespace off each segment (a tree node name
+        # or a path segment can carry stray whitespace) and drop any
+        # segment left empty by a doubled separator, so
+        # "Default Category//  Men  /Tops" and "Default Category/Men/Tops"
+        # key on the same cache entry. Matching stays case-sensitive.
+        return [segment.strip() for segment in path.split("/") if segment.strip()]
 
     def _load_category_tree(self) -> None:
         # The tree's own top node (id 1, "Root Catalog" by default) is never
@@ -205,7 +216,8 @@ class Resolver:
             self._walk_category_tree(child, prefix="")
 
     def _walk_category_tree(self, node: dict, prefix: str) -> None:
-        path = f"{prefix}/{node['name']}" if prefix else node["name"]
+        name = node["name"].strip()
+        path = f"{prefix}/{name}" if prefix else name
         self._categories[path] = node["id"]
         for child in node.get("children_data", []):
             self._walk_category_tree(child, path)
@@ -215,6 +227,8 @@ class Resolver:
         if normalized in self._categories:
             return self._categories[normalized]
 
+        # normalized is built from _split_segments() above, so every
+        # segment here is already stripped and non-empty.
         segments = normalized.split("/")
         parent_id = None
         built = ""

@@ -375,3 +375,98 @@ def test_attribute_set_id_resolves_by_exact_name():
 
     with pytest.raises(ResolveError):
         resolver.attribute_set_id("does-not-exist")
+
+
+def test_category_segments_match_after_whitespace_strip():
+    resource = make_resource()
+    resolver = Resolver(resource)
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/categories",
+            json={
+                "id": 1,
+                "parent_id": 0,
+                "name": "Root Catalog",
+                "children_data": [
+                    {
+                        "id": 2,
+                        "parent_id": 1,
+                        "name": "Default Category",
+                        "children_data": [
+                            # The tree node name itself carries stray
+                            # whitespace, as a real Magento tree sometimes
+                            # does - it must still match a stripped request.
+                            {"id": 10, "parent_id": 2, "name": " Men ", "children_data": []}
+                        ],
+                    }
+                ],
+            },
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/categories",
+            json={"id": 20, "parent_id": 10, "name": "Tops"},
+        )
+        # Deliberately different whitespace than the tree node above (so a
+        # raw string comparison would miss), plus a doubled separator and a
+        # stray-whitespace missing segment - none of it may survive into
+        # the cache key or the create payload.
+        result = resolver.ensure_categories(["Default Category//  Men  / Tops "])
+
+    assert result == {"Default Category//  Men  / Tops ": 20}
+
+    create_requests = [
+        r for r in m.request_history if r.method == "POST" and r.path.endswith("/categories")
+    ]
+    assert len(create_requests) == 1  # Men already existed once stripped - only Tops is created
+    assert create_requests[0].json() == {
+        "category": {"parent_id": 10, "name": "Tops", "is_active": True, "include_in_menu": True}
+    }
+
+
+def test_two_paths_sharing_new_parent_create_it_once():
+    resource = make_resource()
+    resolver = Resolver(resource)
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/categories",
+            json={
+                "id": 1,
+                "parent_id": 0,
+                "name": "Root Catalog",
+                "children_data": [
+                    {
+                        "id": 2,
+                        "parent_id": 1,
+                        "name": "Default Category",
+                        "children_data": [],
+                    }
+                ],
+            },
+        )
+        m.post(
+            "https://shop.test/rest/all/V1/categories",
+            [
+                {"json": {"id": 30, "parent_id": 2, "name": "New"}, "status_code": 200},
+                {"json": {"id": 31, "parent_id": 30, "name": "A"}, "status_code": 200},
+                {"json": {"id": 32, "parent_id": 30, "name": "B"}, "status_code": 200},
+            ],
+        )
+        result = resolver.ensure_categories(
+            ["Default Category/New/A", "Default Category/New/B"]
+        )
+
+    assert result == {"Default Category/New/A": 31, "Default Category/New/B": 32}
+
+    create_requests = [
+        r for r in m.request_history if r.method == "POST" and r.path.endswith("/categories")
+    ]
+    assert len(create_requests) == 3  # New created once, then A and B under it
+    assert create_requests[0].json()["category"]["name"] == "New"
+    assert create_requests[1].json() == {
+        "category": {"parent_id": 30, "name": "A", "is_active": True, "include_in_menu": True}
+    }
+    assert create_requests[2].json() == {
+        "category": {"parent_id": 30, "name": "B", "is_active": True, "include_in_menu": True}
+    }
