@@ -119,6 +119,19 @@ def test_snapshot_products_chunks_skus_by_50():
     assert len(result) == 2
 
 
+def test_snapshot_products_reads_null_items_as_no_match():
+    # Verified live on 2.4.9: with a `fields=items[...]` projection and no
+    # matching SKU, Magento answers {"items": null}, not an empty list.
+    resource = make_resource()
+
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get("https://shop.test/rest/all/V1/products", json={"items": None})
+        result = snapshot_products(resource, ["new-sku"], fields=["name"])
+
+    assert result == {}
+
+
 def test_snapshot_products_queries_a_comma_sku_alone_with_eq():
     resource = make_resource()
 

@@ -123,9 +123,11 @@ def snapshot_products(resource, skus: list[str], fields: list[str]) -> dict[str,
             "fields": f"items[{field_list}]",
         }
         response = resource.get("products", params=params)
-        for item in response.get("items", []):
+        # A `fields` projection turns an empty match into {"items": null}
+        # (verified live on 2.4.9), and drops custom_attributes the same way.
+        for item in response.get("items") or []:
             flat = {field: item.get(field) for field in fields}
-            for attribute in item.get("custom_attributes", []):
+            for attribute in item.get("custom_attributes") or []:
                 flat[attribute["attribute_code"]] = attribute["value"]
             result[item["sku"]] = flat
 
