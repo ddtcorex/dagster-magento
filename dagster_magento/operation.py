@@ -36,6 +36,9 @@ class Operation:
     mutate the dict after construction; writers must build a fresh dict
     per operation and never share one dict across operations; executors
     must copy before wrapping or merging chunks.
+
+    chunk_key: list-endpoint operations sharing a non-None chunk_key are
+    always sent in the same request (never split across multiple chunks).
     """
     method: str
     endpoint: str
@@ -44,6 +47,7 @@ class Operation:
     store_code: str | None = None
     list_key: str | None = None
     bulk: BulkSpec | None = None
+    chunk_key: str | None = None
 
     def __hash__(self):
         return hash((
@@ -54,6 +58,7 @@ class Operation:
             self.store_code,
             self.list_key,
             self.bulk,
+            self.chunk_key,
         ))
 
 

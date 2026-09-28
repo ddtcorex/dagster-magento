@@ -331,6 +331,96 @@ def test_bulk_mode_runs_non_bulk_operations_through_sync(monkeypatch, caplog):
     assert "sync mode" in caplog.text.lower()
 
 
+def test_list_chunking_never_splits_a_chunk_key():
+    """Consecutive operations with the same non-None chunk_key are never split."""
+    # 5 ops: A(no key), B1+B2+B3 (shared key "B"), C(no key)
+    # With chunk_size=3, they should chunk as [A], [B1,B2,B3], [C]
+    ops = [
+        Operation(
+            method="PUT",
+            endpoint="products/tier-prices",
+            payload={"sku": "A", "qty": 10},
+            row_refs=("A",),
+            list_key="prices",
+            chunk_key=None,
+        ),
+        Operation(
+            method="PUT",
+            endpoint="products/tier-prices",
+            payload={"sku": "B", "qty": 10},
+            row_refs=("B",),
+            list_key="prices",
+            chunk_key="B",
+        ),
+        Operation(
+            method="PUT",
+            endpoint="products/tier-prices",
+            payload={"sku": "B", "qty": 20},
+            row_refs=("B",),
+            list_key="prices",
+            chunk_key="B",
+        ),
+        Operation(
+            method="PUT",
+            endpoint="products/tier-prices",
+            payload={"sku": "B", "qty": 50},
+            row_refs=("B",),
+            list_key="prices",
+            chunk_key="B",
+        ),
+        Operation(
+            method="PUT",
+            endpoint="products/tier-prices",
+            payload={"sku": "C", "qty": 10},
+            row_refs=("C",),
+            list_key="prices",
+            chunk_key=None,
+        ),
+    ]
+    resource = StubResource(responses=[[], [], []])
+
+    result = execute(resource, ops, mode="sync", chunk_size=3)
+
+    # Should produce 3 chunks
+    assert len(resource.put_calls) == 3
+    # Chunk 1: [A]
+    assert len(resource.put_calls[0][1]["prices"]) == 1
+    assert resource.put_calls[0][1]["prices"][0]["sku"] == "A"
+    # Chunk 2: [B1, B2, B3] - all B's together despite chunk_size=3
+    assert len(resource.put_calls[1][1]["prices"]) == 3
+    assert all(item["sku"] == "B" for item in resource.put_calls[1][1]["prices"])
+    # Chunk 3: [C]
+    assert len(resource.put_calls[2][1]["prices"]) == 1
+    assert resource.put_calls[2][1]["prices"][0]["sku"] == "C"
+    assert result.succeeded == 5
+    assert result.failed == 0
+
+
+def test_oversized_chunk_key_unit_is_sent_alone():
+    """A unit with a chunk_key larger than chunk_size goes in a chunk of its own."""
+    # 4 operations all sharing chunk_key "LARGE", chunk_size=3
+    # Should produce 1 chunk with all 4
+    ops = [
+        Operation(
+            method="PUT",
+            endpoint="products/tier-prices",
+            payload={"sku": f"X", "qty": i},
+            row_refs=(f"X",),
+            list_key="prices",
+            chunk_key="LARGE",
+        )
+        for i in range(4)
+    ]
+    resource = StubResource(responses=[[]])
+
+    result = execute(resource, ops, mode="sync", chunk_size=3)
+
+    assert len(resource.put_calls) == 1
+    assert len(resource.put_calls[0][1]["prices"]) == 4
+    assert result.succeeded == 4
+    assert result.failed == 0
+
+
 def test_check_error_ratio_raises_above_threshold_and_ignores_none():
     result = UploadResult(succeeded=1, failed=9, pending=0)
 

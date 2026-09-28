@@ -373,3 +373,84 @@ def test_operations_have_no_bulk():
     result = plan_prices(rows)
 
     assert all(op.bulk is None for op in result.operations)
+
+
+def test_replace_tiers_share_the_sku_chunk_key():
+    """Replace-mode tier operations have chunk_key=sku to stay together."""
+    rows = [
+        PriceRow(
+            sku="SKU-024",
+            tiers=[
+                TierPrice(qty=10, price=90.0),
+                TierPrice(qty=20, price=85.0),
+            ],
+        ),
+    ]
+
+    result = plan_prices(rows, tier_mode="replace")
+
+    assert result.failed == []
+    assert len(result.operations) == 2
+    # Both tier operations should have chunk_key="SKU-024"
+    assert result.operations[0].chunk_key == "SKU-024"
+    assert result.operations[1].chunk_key == "SKU-024"
+
+
+def test_add_tiers_have_no_chunk_key():
+    """Add-mode tier operations have chunk_key=None (no chunking constraint)."""
+    rows = [
+        PriceRow(
+            sku="SKU-025",
+            tiers=[
+                TierPrice(qty=10, price=90.0),
+                TierPrice(qty=20, price=85.0),
+            ],
+        ),
+    ]
+
+    result = plan_prices(rows, tier_mode="add")
+
+    assert result.failed == []
+    assert len(result.operations) == 2
+    # Both tier operations should have chunk_key=None
+    assert result.operations[0].chunk_key is None
+    assert result.operations[1].chunk_key is None
+
+
+def test_base_and_special_prices_have_no_chunk_key():
+    """Base and special price operations always have chunk_key=None."""
+    rows = [
+        PriceRow(
+            sku="SKU-026",
+            price=100.0,
+            special_price=50.0,
+            store_id=0,
+        ),
+    ]
+
+    result = plan_prices(rows)
+
+    assert len(result.operations) == 2
+    # Base price
+    assert result.operations[0].chunk_key is None
+    # Special price
+    assert result.operations[1].chunk_key is None
+
+
+def test_zero_price_is_sent():
+    """Price and special_price values of 0 are sent (they are valid)."""
+    rows = [
+        PriceRow(sku="SKU-027", price=0, store_id=0),
+        PriceRow(sku="SKU-028", special_price=0, store_id=0),
+    ]
+
+    result = plan_prices(rows)
+
+    assert result.failed == []
+    assert len(result.operations) == 2
+    # First op: base price with price=0
+    assert result.operations[0].endpoint == "products/base-prices"
+    assert result.operations[0].payload["price"] == 0
+    # Second op: special price with price=0
+    assert result.operations[1].endpoint == "products/special-price"
+    assert result.operations[1].payload["price"] == 0

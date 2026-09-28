@@ -112,6 +112,8 @@ def plan_prices(
                 # Non-empty tiers: add or replace.
                 method = "POST" if tier_mode == "add" else "PUT"
                 for tier, website_id in zip(row.tiers, tier_website_ids):
+                    # In replace mode, chunk_key keeps all tiers of a SKU together.
+                    chunk_key = row.sku if tier_mode == "replace" else None
                     row_operations.append(
                         Operation(
                             method=method,
@@ -126,6 +128,7 @@ def plan_prices(
                             },
                             row_refs=(row.sku,),
                             list_key="prices",
+                            chunk_key=chunk_key,
                         )
                     )
 

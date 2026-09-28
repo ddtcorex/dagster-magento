@@ -27,6 +27,53 @@ class MagentoImportError(Exception):
     caller-supplied threshold."""
 
 
+def _chunk_list_operations(ops: list[Operation], size: int) -> list[list[Operation]]:
+    """Chunk list-endpoint operations, keeping consecutive ops with the same
+    non-None chunk_key together in the same request.
+
+    A unit (a run of ops sharing one chunk_key, or a single op with chunk_key
+    None) is never split across chunks. If adding a unit would exceed size,
+    start a new chunk. A unit larger than size goes in a chunk of its own.
+    Order is preserved.
+    """
+    chunks = []
+    current_chunk = []
+    current_size = 0
+
+    i = 0
+    while i < len(ops):
+        op = ops[i]
+
+        # Collect consecutive ops with the same non-None chunk_key.
+        unit = [op]
+        if op.chunk_key is not None:
+            j = i + 1
+            while j < len(ops) and ops[j].chunk_key == op.chunk_key:
+                unit.append(ops[j])
+                j += 1
+
+        unit_size = len(unit)
+
+        # If adding this unit would exceed size and current_chunk is not empty,
+        # start a new chunk.
+        if current_size > 0 and current_size + unit_size > size:
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_size = 0
+
+        # Add the unit to the current chunk.
+        current_chunk.extend(unit)
+        current_size += unit_size
+
+        # Move past the unit.
+        i += len(unit)
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+
 def check_error_ratio(result: UploadResult, fail_on_error_ratio: float | None) -> None:
     """Raise MagentoImportError when failed / (succeeded + failed + pending)
     is above fail_on_error_ratio. None disables the check entirely."""
@@ -85,7 +132,7 @@ def _execute_sync(resource, operations: list[Operation], chunk_size: int | None)
 
     effective_chunk_size = chunk_size if chunk_size is not None else _DEFAULT_LIST_CHUNK_SIZE
     for (method, endpoint, store_code, list_key), ops in groups.items():
-        for chunk in chunk_rows(ops, effective_chunk_size):
+        for chunk in _chunk_list_operations(ops, effective_chunk_size):
             result = result.merge(
                 _send_list_chunk(resource, method, endpoint, store_code, list_key, chunk, logger)
             )

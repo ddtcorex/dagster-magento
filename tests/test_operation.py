@@ -135,3 +135,49 @@ def test_row_error_is_frozen_and_comparable():
 
     err3 = RowError(row_ref="row1", message="different message")
     assert err != err3
+
+
+def test_operation_chunk_key_is_hashable():
+    op1 = Operation(
+        method="POST",
+        endpoint="products/tier-prices",
+        payload={"sku": "A", "qty": 10},
+        row_refs=("A",),
+        list_key="prices",
+        chunk_key="A",
+    )
+    op2 = Operation(
+        method="POST",
+        endpoint="products/tier-prices",
+        payload={"sku": "A", "qty": 10},
+        row_refs=("A",),
+        list_key="prices",
+        chunk_key="A",
+    )
+    # Same chunk_key should hash equal
+    assert op1 == op2
+    assert hash(op1) == hash(op2)
+
+    op3 = Operation(
+        method="POST",
+        endpoint="products/tier-prices",
+        payload={"sku": "A", "qty": 10},
+        row_refs=("A",),
+        list_key="prices",
+        chunk_key="B",
+    )
+    # Different chunk_key should be different
+    assert op1 != op3
+    assert hash(op1) != hash(op3)
+
+    op4 = Operation(
+        method="POST",
+        endpoint="products/tier-prices",
+        payload={"sku": "A", "qty": 10},
+        row_refs=("A",),
+        list_key="prices",
+        chunk_key=None,
+    )
+    # None chunk_key is different from "A"
+    assert op1 != op4
+    assert hash(op1) != hash(op4)
