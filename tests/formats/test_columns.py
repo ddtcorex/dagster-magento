@@ -1,16 +1,20 @@
+import pytest
+
 from dagster_magento.formats import columns
-from dagster_magento.models import BundleOption, BundleSelection, Variation
+from dagster_magento.formats.columns import ColumnParseError
 
 
 def test_parse_configurable_variations_sample_shape():
-    """Sample shape from the native configurable_variations column."""
+    """Sample shape from the native configurable_variations column. Returns
+    plain dicts, not Variation instances - a column parser never
+    constructs a pydantic model itself (see ColumnParseError docstring)."""
     value = "sku=A,size=S,color=Gray,default=1|sku=B,size=S,color=Green"
 
     result = columns.parse_configurable_variations(value)
 
     assert result == [
-        Variation(sku="A", attributes={"size": "S", "color": "Gray"}),
-        Variation(sku="B", attributes={"size": "S", "color": "Green"}),
+        {"sku": "A", "attributes": {"size": "S", "color": "Gray"}},
+        {"sku": "B", "attributes": {"size": "S", "color": "Green"}},
     ]
 
 
@@ -20,7 +24,9 @@ def test_parse_configurable_variations_empty_value_is_empty_list():
 
 def test_parse_bundle_values_groups_by_option_name():
     """Sample shape from the native bundle_values column: two selections
-    under the same option name collapse into one BundleOption."""
+    under the same option name collapse into one option dict. Returns
+    plain dicts, not BundleOption instances - see the module docstring on
+    why a column parser never constructs a pydantic model itself."""
     value = (
         "name=Opt1,type=select,required=1,sku=S1,price=15.0000,default=0,"
         "default_qty=1.0000,price_type=fixed|"
@@ -31,15 +37,15 @@ def test_parse_bundle_values_groups_by_option_name():
     result = columns.parse_bundle_values(value)
 
     assert result == [
-        BundleOption(
-            title="Opt1",
-            type="select",
-            required=True,
-            selections=[
-                BundleSelection(sku="S1", qty=1.0, price=15.0, price_type="fixed", is_default=False),
-                BundleSelection(sku="S2", qty=1.0, price=20.0, price_type="fixed", is_default=True),
+        {
+            "title": "Opt1",
+            "type": "select",
+            "required": True,
+            "selections": [
+                {"sku": "S1", "qty": 1.0, "price": 15.0, "price_type": "fixed", "is_default": False},
+                {"sku": "S2", "qty": 1.0, "price": 20.0, "price_type": "fixed", "is_default": True},
             ],
-        )
+        }
     ]
 
 
@@ -48,7 +54,36 @@ def test_parse_bundle_values_distinct_names_stay_first_seen_order():
 
     result = columns.parse_bundle_values(value)
 
-    assert [option.title for option in result] == ["B", "A"]
+    assert [option["title"] for option in result] == ["B", "A"]
+
+
+def test_parse_bundle_values_unknown_type_passes_through_unvalidated():
+    """A parser never validates the enum value itself - it is left for
+    catalog.py's model_validate to reject as a RowError in one place."""
+    value = "name=Opt1,type=not-a-real-type,required=0,sku=S1"
+
+    result = columns.parse_bundle_values(value)
+
+    assert result[0]["type"] == "not-a-real-type"
+
+
+def test_parse_bundle_values_bad_default_qty_raises_column_parse_error():
+    value = "name=Opt1,type=select,required=0,sku=S1,default_qty=not-a-number"
+
+    with pytest.raises(ColumnParseError, match="bundle_values"):
+        columns.parse_bundle_values(value)
+
+
+def test_parse_bundle_values_bad_price_raises_column_parse_error():
+    value = "name=Opt1,type=select,required=0,sku=S1,price=not-a-number"
+
+    with pytest.raises(ColumnParseError, match="bundle_values"):
+        columns.parse_bundle_values(value)
+
+
+def test_parse_associated_sku_pairs_bad_qty_raises_column_parse_error():
+    with pytest.raises(ColumnParseError, match="associated_skus"):
+        columns.parse_associated_sku_pairs("SKU1=not-a-number")
 
 
 def test_parse_additional_attributes_with_quoted_comma():

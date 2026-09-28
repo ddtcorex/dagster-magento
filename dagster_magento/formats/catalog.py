@@ -56,6 +56,17 @@ def _format_validation_error(exc: ValidationError) -> str:
     return "; ".join(parts)
 
 
+def _parse_float(column: str, value: str) -> float:
+    """Convert one column's raw value to float, or raise a plain
+    ValueError naming the column and the bad value - callers catch
+    ValueError per row (columns.py's ColumnParseError is itself a
+    ValueError, so the same except clause covers both)."""
+    try:
+        return float(value)
+    except ValueError as error:
+        raise ValueError(f"{column}: invalid number {value!r}") from error
+
+
 # -- products -----------------------------------------------------------------
 
 # Native inventory/stock columns: stock is imported through
@@ -138,10 +149,10 @@ def _parse_status(value: str) -> int | None:
     return None
 
 
-def _configurable_attribute_order(variations) -> list[str]:
+def _configurable_attribute_order(variations: list[dict[str, Any]]) -> list[str]:
     order: list[str] = []
     for variation in variations:
-        for key in variation.attributes:
+        for key in variation["attributes"]:
             if key not in order:
                 order.append(key)
     return order
@@ -158,7 +169,7 @@ def _build_downloadable_links(value: str) -> list[dict[str, Any]]:
             {
                 "title": fields.get("title", ""),
                 "url": fields.get("url", ""),
-                "price": float(price_text) if price_text else 0,
+                "price": _parse_float("downloadable_links", price_text) if price_text else 0,
             }
         )
     return links
@@ -196,10 +207,63 @@ def _build_images(fields: dict[str, str]) -> list[dict[str, Any]]:
     ]
 
 
+def _assign_product_column(
+    column: str, value: str, kwargs: dict[str, Any], attributes: dict[str, Any]
+) -> None:
+    """Map one non-dropped, non-image column onto `kwargs`/`attributes` in
+    place. May raise ValueError (or columns.py's ColumnParseError, itself a
+    ValueError) for a malformed cell - the caller catches it per column and
+    turns it into this row's single error, so a bad cell never escapes as
+    an uncaught exception."""
+    if column == "attribute_set_code":
+        kwargs["attribute_set"] = value
+    elif column == "product_type":
+        kwargs["type"] = value
+    elif column == "product_websites":
+        kwargs["websites"] = [w.strip() for w in value.split(",") if w.strip()]
+    elif column == "categories":
+        kwargs["categories"] = columns.parse_categories(value)
+    elif column == "name":
+        kwargs["name"] = value
+    elif column == "price":
+        kwargs["price"] = _parse_float("price", value)
+    elif column == "weight":
+        kwargs["weight"] = _parse_float("weight", value)
+    elif column == "product_online":
+        status = _parse_status(value)
+        if status is not None:
+            kwargs["status"] = status
+    elif column == "visibility":
+        kwargs["visibility"] = _parse_visibility(value)
+    elif column == "additional_attributes":
+        attributes.update(columns.parse_additional_attributes(value))
+    elif column == "configurable_variations":
+        variations = columns.parse_configurable_variations(value)
+        kwargs["variations"] = variations
+        kwargs["configurable_attributes"] = _configurable_attribute_order(variations)
+    elif column == "bundle_values":
+        kwargs["bundle_options"] = columns.parse_bundle_values(value)
+    elif column in _BUNDLE_FLAG_COLUMNS:
+        attribute_key, mapping = _BUNDLE_FLAG_COLUMNS[column]
+        attributes[attribute_key] = mapping.get(value, value)
+    elif column == "associated_skus":
+        kwargs["grouped_links"] = [
+            {"sku": sku, "qty": qty, "position": position}
+            for position, (sku, qty) in enumerate(columns.parse_associated_sku_pairs(value))
+        ]
+    elif column == "downloadable_links":
+        kwargs["downloadable_links"] = _build_downloadable_links(value)
+    else:
+        attributes[column] = value
+
+
 def _parse_row_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict[str, Any] | str:
     """Map one product row's columns (already stripped of sku/store_view_code)
     onto ProductRow kwargs. Returns an error message (str) instead of a dict
-    when a column's value cannot be mapped at all."""
+    when a column's value cannot be mapped at all - every malformed cell
+    (a bad float, an unmapped visibility text, a non-url downloadable link,
+    ...) is caught here as a plain ValueError, never left to escape as an
+    exception out of products_from_rows."""
     kwargs: dict[str, Any] = {}
     attributes: dict[str, Any] = {}
     image_fields: dict[str, str] = {}
@@ -214,52 +278,10 @@ def _parse_row_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict
         if column in _IMAGE_COLUMNS:
             image_fields[column] = value
             continue
-        if column == "attribute_set_code":
-            kwargs["attribute_set"] = value
-        elif column == "product_type":
-            kwargs["type"] = value
-        elif column == "product_websites":
-            kwargs["websites"] = [w.strip() for w in value.split(",") if w.strip()]
-        elif column == "categories":
-            kwargs["categories"] = columns.parse_categories(value)
-        elif column == "name":
-            kwargs["name"] = value
-        elif column == "price":
-            kwargs["price"] = float(value)
-        elif column == "weight":
-            kwargs["weight"] = float(value)
-        elif column == "product_online":
-            status = _parse_status(value)
-            if status is not None:
-                kwargs["status"] = status
-        elif column == "visibility":
-            try:
-                kwargs["visibility"] = _parse_visibility(value)
-            except ValueError as error:
-                return str(error)
-        elif column == "additional_attributes":
-            attributes.update(columns.parse_additional_attributes(value))
-        elif column == "configurable_variations":
-            variations = columns.parse_configurable_variations(value)
-            kwargs["variations"] = variations
-            kwargs["configurable_attributes"] = _configurable_attribute_order(variations)
-        elif column == "bundle_values":
-            kwargs["bundle_options"] = columns.parse_bundle_values(value)
-        elif column in _BUNDLE_FLAG_COLUMNS:
-            attribute_key, mapping = _BUNDLE_FLAG_COLUMNS[column]
-            attributes[attribute_key] = mapping.get(value, value)
-        elif column == "associated_skus":
-            kwargs["grouped_links"] = [
-                {"sku": sku, "qty": qty, "position": position}
-                for position, (sku, qty) in enumerate(columns.parse_associated_sku_pairs(value))
-            ]
-        elif column == "downloadable_links":
-            try:
-                kwargs["downloadable_links"] = _build_downloadable_links(value)
-            except ValueError as error:
-                return str(error)
-        else:
-            attributes[column] = value
+        try:
+            _assign_product_column(column, value, kwargs, attributes)
+        except ValueError as error:
+            return str(error)
 
     if image_fields:
         kwargs["images"] = _build_images(image_fields)
@@ -512,14 +534,16 @@ def _map_tier_price_website(value: str) -> str:
     return value
 
 
-def _build_tier_price(row: dict[str, str]) -> dict[str, Any] | None:
+def _build_tier_price(row: dict[str, str]) -> dict[str, Any]:
+    """Build one tier dict, or raise ValueError naming the missing/bad
+    column - the caller catches it per row and turns it into a RowError."""
     qty_text = (row.get("tier_price_qty") or "").strip()
     price_text = (row.get("tier_price") or "").strip()
     if not qty_text or not price_text:
-        return None
+        raise ValueError("advanced_pricing: missing tier_price_qty or tier_price")
     tier: dict[str, Any] = {
-        "qty": float(qty_text),
-        "price": float(price_text),
+        "qty": _parse_float("tier_price_qty", qty_text),
+        "price": _parse_float("tier_price", price_text),
         "website": _map_tier_price_website((row.get("tier_price_website") or "").strip()),
     }
     customer_group = (row.get("tier_price_customer_group") or "").strip()
@@ -554,14 +578,11 @@ def prices_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[PriceRow], 
         tiers: list[dict[str, Any]] = []
         ok = True
         for line, row in group:
-            tier = _build_tier_price(row)
-            if tier is None:
-                errors.append(
-                    RowError(row_ref=f"line {line}: {sku}", message="missing tier_price_qty or tier_price")
-                )
+            try:
+                tiers.append(_build_tier_price(row))
+            except ValueError as error:
+                errors.append(RowError(row_ref=f"line {line}: {sku}", message=str(error)))
                 ok = False
-                continue
-            tiers.append(tier)
         if not ok:
             continue
         price = _validate_row(PriceRow, {"sku": sku, "tiers": tiers}, group[0][0], sku, errors)

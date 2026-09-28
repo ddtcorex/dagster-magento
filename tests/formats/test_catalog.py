@@ -1,9 +1,107 @@
+import pytest
+
 from dagster_magento.formats import catalog
 
 
 def _warn_spy():
     calls: list[str] = []
     return calls, calls.append
+
+
+# -- malformed cells never raise, always become one RowError -------------------
+
+
+@pytest.mark.parametrize(
+    "from_rows, rows",
+    [
+        pytest.param(
+            catalog.products_from_rows,
+            [
+                (2, {"sku": "BAD1", "price": "not-a-number"}),
+                (3, {"sku": "GOOD1", "price": "9.99"}),
+            ],
+            id="price",
+        ),
+        pytest.param(
+            catalog.products_from_rows,
+            [
+                (2, {"sku": "BAD1", "weight": "not-a-number"}),
+                (3, {"sku": "GOOD1", "weight": "1.5"}),
+            ],
+            id="weight",
+        ),
+        pytest.param(
+            catalog.products_from_rows,
+            [
+                (2, {"sku": "BAD1", "associated_skus": "SKU1=not-a-number"}),
+                (3, {"sku": "GOOD1", "associated_skus": "SKU1=2.0"}),
+            ],
+            id="associated_skus_qty",
+        ),
+        pytest.param(
+            catalog.products_from_rows,
+            [
+                (
+                    2,
+                    {
+                        "sku": "BAD1",
+                        "bundle_values": "name=Opt1,type=select,required=1,sku=S1,default_qty=not-a-number",
+                    },
+                ),
+                (
+                    3,
+                    {
+                        "sku": "GOOD1",
+                        "bundle_values": "name=Opt1,type=select,required=1,sku=S1,default_qty=1.0",
+                    },
+                ),
+            ],
+            id="bundle_default_qty",
+        ),
+        pytest.param(
+            catalog.products_from_rows,
+            [
+                (2, {"sku": "BAD1", "bundle_values": "name=Opt1,type=select,required=1,sku=S1,price=not-a-number"}),
+                (3, {"sku": "GOOD1", "bundle_values": "name=Opt1,type=select,required=1,sku=S1,price=15.0"}),
+            ],
+            id="bundle_price",
+        ),
+        pytest.param(
+            catalog.products_from_rows,
+            [
+                (2, {"sku": "BAD1", "bundle_values": "name=Opt1,type=not-a-real-type,required=1,sku=S1"}),
+                (3, {"sku": "GOOD1", "bundle_values": "name=Opt1,type=select,required=1,sku=S1"}),
+            ],
+            id="bundle_unknown_type",
+        ),
+        pytest.param(
+            catalog.prices_from_rows,
+            [
+                (2, {"sku": "BAD1", "tier_price_qty": "not-a-number", "tier_price": "10"}),
+                (3, {"sku": "GOOD1", "tier_price_qty": "5", "tier_price": "10"}),
+            ],
+            id="tier_price_qty",
+        ),
+        pytest.param(
+            catalog.prices_from_rows,
+            [
+                (2, {"sku": "BAD1", "tier_price_qty": "5", "tier_price": "not-a-number"}),
+                (3, {"sku": "GOOD1", "tier_price_qty": "5", "tier_price": "10"}),
+            ],
+            id="tier_price",
+        ),
+    ],
+)
+def test_malformed_numeric_cells_become_row_errors(from_rows, rows):
+    """A malformed numeric/enum cell never raises - it becomes exactly one
+    RowError for its own row, and every other row in the same input still
+    parses (the contract every *_from_rows function makes)."""
+    results, errors = from_rows(rows)
+
+    assert len(errors) == 1
+    assert "BAD1" in errors[0].row_ref
+    assert len(results) == 1
+    assert results[0].sku == "GOOD1"
 
 
 # -- products -----------------------------------------------------------------

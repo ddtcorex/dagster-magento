@@ -16,6 +16,7 @@ from dagster_magento.formats.catalog import (
     source_items_from_rows,
 )
 from dagster_magento.formats.columns import (
+    ColumnParseError,
     parse_additional_attributes,
     parse_associated_sku_pairs,
     parse_associated_skus,
@@ -33,6 +34,7 @@ __all__ = [
     "prices_from_rows",
     "products_from_rows",
     "source_items_from_rows",
+    "ColumnParseError",
     "parse_additional_attributes",
     "parse_associated_sku_pairs",
     "parse_associated_skus",

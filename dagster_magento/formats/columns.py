@@ -9,7 +9,21 @@ against short inline strings copied from the sample column shapes.
 
 from typing import Any
 
-from dagster_magento.models import BundleOption, BundleSelection, Variation
+
+class ColumnParseError(ValueError):
+    """Raised when a column's raw value cannot be parsed at all (a
+    non-numeric qty/price, for example). The message names the column and
+    the offending value. `ColumnParseError` is a `ValueError` subclass, so
+    an ordinary `except ValueError` in `formats/catalog.py` already catches
+    it - a column parser never lets a bad cell escape as anything a caller
+    would have to know a special exception type to handle."""
+
+
+def _parse_float(column: str, field: str, value: str) -> float:
+    try:
+        return float(value)
+    except ValueError as error:
+        raise ColumnParseError(f"{column}: invalid {field} {value!r}") from error
 
 
 def _split_top_level(value: str, separator: str) -> list[str]:
@@ -74,23 +88,33 @@ def parse_pipe_groups(value: str) -> list[dict[str, str]]:
     return [_parse_kv_group(entry.strip()) for entry in value.split("|") if entry.strip()]
 
 
-def parse_configurable_variations(value: str) -> list[Variation]:
+def parse_configurable_variations(value: str) -> list[dict[str, Any]]:
     """Parse `configurable_variations`: pipe-separated variation entries,
-    each a `k=v,k=v` group with a `sku` key. `default` is dropped - it is
-    not modeled on `Variation`, configurable child selection is expressed
-    entirely through the parent's `variations` list."""
-    variations: list[Variation] = []
+    each a `k=v,k=v` group with a `sku` key, into plain dicts shaped like
+    `Variation` kwargs (`{"sku": ..., "attributes": {...}}`). `default` is
+    dropped - it is not modeled on `Variation`, configurable child
+    selection is expressed entirely through the parent's `variations`
+    list. Returns dicts, not `Variation` instances: a parser never
+    constructs a pydantic model itself, so a bad cell can never escape as
+    an uncaught `ValidationError` - `catalog.py` builds the real model and
+    turns any validation failure into a `RowError` in one place."""
+    variations: list[dict[str, Any]] = []
     for fields in parse_pipe_groups(value):
         sku = fields.pop("sku", "")
         fields.pop("default", None)
-        variations.append(Variation(sku=sku, attributes=fields))
+        variations.append({"sku": sku, "attributes": fields})
     return variations
 
 
-def parse_bundle_values(value: str) -> list[BundleOption]:
+def parse_bundle_values(value: str) -> list[dict[str, Any]]:
     """Parse `bundle_values`: pipe-separated selection entries, each a
-    `k=v,k=v` group. Entries sharing the same `name` become one
-    `BundleOption`, in first-seen order."""
+    `k=v,k=v` group, into plain dicts shaped like `BundleOption` kwargs.
+    Entries sharing the same `name` become one option dict, in first-seen
+    order. Numeric fields (`default_qty`, `price`) that fail to parse
+    raise `ColumnParseError` naming the field and value; an unrecognized
+    `type` is passed through as-is and left for `catalog.py`'s
+    `model_validate` to reject as a `RowError` - see the module docstring
+    on why this parser never constructs a pydantic model itself."""
     options: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for fields in parse_pipe_groups(value):
@@ -104,22 +128,22 @@ def parse_bundle_values(value: str) -> list[BundleOption]:
             }
             order.append(name)
         options[name]["selections"].append(_bundle_selection(fields))
-    return [BundleOption(**options[name]) for name in order]
+    return [options[name] for name in order]
 
 
-def _bundle_selection(fields: dict[str, str]) -> BundleSelection:
-    kwargs: dict[str, Any] = {"sku": fields.get("sku", "")}
+def _bundle_selection(fields: dict[str, str]) -> dict[str, Any]:
+    selection: dict[str, Any] = {"sku": fields.get("sku", "")}
     qty = fields.get("default_qty", "")
     if qty:
-        kwargs["qty"] = float(qty)
+        selection["qty"] = _parse_float("bundle_values", "default_qty", qty)
     price = fields.get("price", "")
     if price:
-        kwargs["price"] = float(price)
+        selection["price"] = _parse_float("bundle_values", "price", price)
     price_type = fields.get("price_type", "")
     if price_type:
-        kwargs["price_type"] = price_type
-    kwargs["is_default"] = fields.get("default") == "1"
-    return BundleSelection(**kwargs)
+        selection["price_type"] = price_type
+    selection["is_default"] = fields.get("default") == "1"
+    return selection
 
 
 def parse_categories(value: str) -> list[str]:
@@ -147,7 +171,10 @@ def parse_associated_sku_pairs(value: str) -> list[tuple[str, float]]:
             continue
         seen.add(sku)
         qty_text = qty_text.strip()
-        pairs.append((sku, float(qty_text) if qty_text else 0.0))
+        if not qty_text:
+            pairs.append((sku, 0.0))
+            continue
+        pairs.append((sku, _parse_float("associated_skus", f"qty for sku {sku!r}", qty_text)))
     return pairs
 
 
