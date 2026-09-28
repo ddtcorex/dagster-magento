@@ -5,7 +5,7 @@ from dagster_magento.models import (
     validate_rows,
 )
 from dagster_magento.operation import RowError
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 def test_product_row_defaults():
@@ -107,3 +107,43 @@ def test_validate_rows_collects_errors_with_row_ref():
     # Second error should use row index as fallback
     err2 = [e for e in errors if e.row_ref == "row 2"][0]
     assert isinstance(err2, RowError)
+
+
+def test_validate_rows_propagates_non_validation_errors():
+    """validate_rows propagates non-ValidationError exceptions instead of catching them."""
+    # Model with a validator that raises a non-ValueError exception
+    class StrictRow(BaseModel):
+        code: str
+
+        @field_validator("code")
+        @classmethod
+        def check_code_not_x(cls, v):
+            if v == "X":
+                raise RuntimeError("code X is forbidden")
+            return v
+
+    raw = [
+        {"code": "A"},
+        {"code": "X"},  # Will trigger RuntimeError
+    ]
+
+    # Non-ValidationError (RuntimeError) should propagate, not be caught
+    with pytest.raises(RuntimeError, match="code X is forbidden"):
+        validate_rows(StrictRow, raw, id_field="code")
+
+
+def test_configurable_with_variation_missing_attribute_key():
+    """ProductRow rejects variations that lack a configurable attribute key."""
+    from dagster_magento.models import Variation
+
+    # Variation with only 'color' but 'size' is required
+    with pytest.raises(ValueError, match="missing configurable attributes"):
+        ProductRow(
+            sku="configurable-sku",
+            type="configurable",
+            variations=[
+                Variation(sku="child-1", attributes={"color": "red"}),
+                Variation(sku="child-2", attributes={"color": "blue", "size": "large"}),
+            ],
+            configurable_attributes=["color", "size"],
+        )

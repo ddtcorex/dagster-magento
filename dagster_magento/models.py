@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator, ValidationError
 from dagster_magento.operation import RowError
 
 
@@ -85,29 +85,25 @@ class ProductRow(BaseModel):
     downloadable_samples: list[DownloadableSample] = Field(default_factory=list)
     images: list[Image] = Field(default_factory=list)
 
-    @field_validator("configurable_attributes", mode="after")
-    @classmethod
-    def validate_configurable(cls, v: list[str], info):
+    @model_validator(mode="after")
+    def validate_configurable(self):
         """Validate that configurable products with variations have configurable_attributes."""
-        type_val = info.data.get("type")
-        variations = info.data.get("variations", [])
-
         # If type is configurable and variations exist, configurable_attributes must be non-empty
-        if type_val == "configurable" and variations:
-            if not v:
+        if self.type == "configurable" and self.variations:
+            if not self.configurable_attributes:
                 raise ValueError(
                     "configurable_attributes must be non-empty when variations are present"
                 )
 
             # Every variation's attributes must include all configurable attributes
-            for i, var in enumerate(variations):
-                missing = set(v) - set(var.attributes.keys())
+            for i, var in enumerate(self.variations):
+                missing = set(self.configurable_attributes) - set(var.attributes.keys())
                 if missing:
                     raise ValueError(
                         f"variation {i} is missing configurable attributes: {sorted(missing)}"
                     )
 
-        return v
+        return self
 
 
 class CategoryRow(BaseModel):
@@ -218,21 +214,17 @@ def validate_rows(
         try:
             instance = model.model_validate(row)
             valid.append(instance)
-        except Exception as e:
+        except ValidationError as e:
             # Get row_ref from id_field if present, otherwise use index
             row_ref = str(row.get(id_field, f"row {idx}"))
 
-            # Extract error message from pydantic ValidationError or other errors
-            if hasattr(e, "errors"):
-                # Pydantic ValidationError - build compact message
-                error_parts = []
-                for err in e.errors():
-                    field = ".".join(str(x) for x in err["loc"])
-                    msg = err["msg"]
-                    error_parts.append(f"{field}: {msg}")
-                message = "; ".join(error_parts)
-            else:
-                message = str(e)
+            # Build compact message from pydantic ValidationError
+            error_parts = []
+            for err in e.errors():
+                field = ".".join(str(x) for x in err["loc"])
+                msg = err["msg"]
+                error_parts.append(f"{field}: {msg}")
+            message = "; ".join(error_parts)
 
             errors.append(RowError(row_ref=row_ref, message=message))
 
