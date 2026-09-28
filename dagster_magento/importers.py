@@ -8,7 +8,6 @@ is failed if any of its operations failed, else pending if any is still
 pending, else succeeded. MagentoAuthError is never caught here.
 """
 
-import copy
 import urllib.parse
 from typing import Callable, Literal
 
@@ -17,7 +16,10 @@ from dagster import MaterializeResult, get_dagster_logger
 from pydantic import BaseModel
 
 from dagster_magento.diff import (
+    PRODUCT_SNAPSHOT_FIELDS,
     normalize,
+    price_matches_snapshot,
+    product_matches_snapshot,
     snapshot_media,
     snapshot_prices,
     snapshot_products,
@@ -38,7 +40,7 @@ from dagster_magento.models import (
     validate_rows,
 )
 from dagster_magento.operation import RowError
-from dagster_magento.resolvers import Resolver, ResolveError
+from dagster_magento.resolvers import Resolver
 from dagster_magento.upload import UploadResult
 from dagster_magento.writers import PlanResult
 from dagster_magento.writers.attribute_sets import plan_attribute_sets
@@ -56,18 +58,6 @@ from dagster_magento.writers.products import plan_products
 
 Mode = Literal["sync", "bulk"]
 
-# The product fields the diff snapshot reads back; custom attributes a row
-# sets are compared on top of these.
-PRODUCT_DIFF_FIELDS = ["type_id", "attribute_set_id", "status", "name", "price", "visibility", "weight"]
-_PRODUCT_FIELD_KINDS = {
-    "type_id": "text",
-    "attribute_set_id": "int",
-    "status": "int",
-    "name": "text",
-    "price": "decimal",
-    "visibility": "int",
-    "weight": "decimal",
-}
 _MAX_ATTRIBUTE_SET_PASSES = 3
 
 
@@ -90,17 +80,22 @@ def _fold_by_row(
     validation_failed: list[RowError],
     skipped: int,
 ) -> UploadResult:
-    """Fold per-operation outcomes into one outcome per row ref. The
-    executor counts each operation's row_refs, so without this a row with
-    three operations would be counted three times."""
+    """Fold per-operation outcomes into one outcome per row. The executor
+    counts each operation's row_refs, so without this a row with three
+    operations would be counted three times."""
     failed_refs = {error.row_ref for error in plan_failed}
     pending_refs = set()
     for error in result.errors:
         target = failed_refs if error["status"] == "failed" else pending_refs
         target.update(error["row_ids"])
 
-    succeeded = failed = pending = 0
-    for ref in dict.fromkeys([*row_ids, *(error.row_ref for error in plan_failed)]):
+    # One entry in row_ids per row (two price rows for one SKU in two
+    # stores are two rows). A plan RowError for a row that has no entry
+    # in row_ids is counted on its own.
+    counted = set(row_ids)
+    succeeded = pending = 0
+    failed = sum(1 for error in plan_failed if error.row_ref not in counted)
+    for ref in row_ids:
         if ref in failed_refs:
             failed += 1
         elif ref in pending_refs:
@@ -134,7 +129,7 @@ def _complete(
     op_refs = {ref for op in plan.operations for ref in op.row_refs}
     settled = {error.row_ref for error in plan.failed} | set(plan.skipped)
     row_ids, noop = [], 0
-    for ref in dict.fromkeys(refs):
+    for ref in refs:
         if ref in op_refs or (noop_succeeded and ref not in settled):
             row_ids.append(ref)
         elif ref not in settled:
@@ -187,9 +182,15 @@ def import_attribute_sets(
     resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
 ):
     """Pass-based: a set is created in one pass, its groups in the next and
-    the attribute assignments once the groups exist. Converged means a pass
-    plans no operation that has not already succeeded (assignments are
-    idempotent and always re-planned)."""
+    the attribute assignments once the groups exist, with the resolver's
+    set cache refreshed between passes.
+
+    Convergence: a pass converges when it plans nothing that has not
+    already succeeded in an earlier pass. The writer re-plans attribute
+    assignments on every pass (they are idempotent), so "plans no
+    operations at all" would never hold. After 3 executed passes, every
+    row that still plans a new operation fails with "attribute set not
+    converged after 3 passes"."""
     valid, invalid = _validate(AttributeSetRow, rows, "name")
     resolver = Resolver(resource)
     active = list(valid)
@@ -241,52 +242,18 @@ def import_categories(
 # -- products -------------------------------------------------------------------
 
 
-def _row_attribute_value(meta, value):
-    if meta.frontend_input == "select":
-        return str(value)
-    if meta.frontend_input == "multiselect":
-        return normalize(value, "multiselect")
-    return normalize(value, "decimal" if meta.backend_type == "decimal" else "text")
-
-
-def _product_unchanged(row: ProductRow, existing: dict, resolver) -> bool:
-    """Compare only the fields the writer would send for this row. A label
-    the resolver cannot map yet (an unknown option or set) means changed,
-    and the writer decides whether that creates it or fails the row."""
-    try:
-        desired = {
-            "type_id": row.type,
-            "attribute_set_id": row.attribute_set if row.attribute_set.isdigit()
-            else resolver.attribute_set_id(row.attribute_set),
-        }
-        for field in ("name", "price", "status", "visibility", "weight"):
-            if getattr(row, field) is not None:
-                desired[field] = getattr(row, field)
-        wanted = {field: normalize(value, _PRODUCT_FIELD_KINDS[field]) for field, value in desired.items()}
-        current = {field: normalize(existing.get(field), _PRODUCT_FIELD_KINDS[field]) for field in desired}
-        for code, value in row.attributes.items():
-            meta = resolver.attribute(code)
-            if meta.frontend_input == "select":
-                value = resolver.option_id(code, value, create=False)
-            elif meta.frontend_input == "multiselect":
-                labels = value.split(",") if isinstance(value, str) else value
-                value = [resolver.option_id(code, label.strip(), create=False) for label in labels]
-            wanted[code] = _row_attribute_value(meta, value)
-            current[code] = None if existing.get(code) is None else _row_attribute_value(meta, existing[code])
-    except ResolveError:
-        return False
-    return wanted == current
-
-
 def import_products(
     resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
 ):
-    """Snapshot existing SKUs, skip unchanged rows (diff=True), plan, then
-    execute the main and store-value product operations before the type
-    follow-ups, because a configurable child must exist before it is linked."""
+    """Snapshot existing SKUs, skip rows `product_matches_snapshot` proves
+    unchanged (diff=True), plan, then execute the main and store-value
+    product operations before the type follow-ups, because a configurable
+    child must exist before it is linked. Images are out of scope here:
+    import_media owns them."""
     valid, invalid = _validate(ProductRow, rows, "sku")
     resolver = Resolver(resource)
-    snapshot = snapshot_products(resource, list(dict.fromkeys(row.sku for row in valid)), PRODUCT_DIFF_FIELDS)
+    skus = list(dict.fromkeys(row.sku for row in valid))
+    snapshot = snapshot_products(resource, skus, PRODUCT_SNAPSHOT_FIELDS)
 
     changed, skipped = valid, 0
     if diff and snapshot:
@@ -294,7 +261,7 @@ def import_products(
         changed = [
             row
             for row in valid
-            if row.sku not in snapshot or not _product_unchanged(row, snapshot[row.sku], resolver)
+            if row.sku not in snapshot or not product_matches_snapshot(row, snapshot[row.sku], resolver)
         ]
         skipped = len(valid) - len(changed)
 
@@ -311,62 +278,28 @@ def import_products(
 
 
 def _merge_prices(rows: list[PriceRow]) -> tuple[list[PriceRow], int]:
-    """Merge rows sharing a SKU: a later non-None field overrides an
-    earlier one, so a file splitting base and special prices over two rows
-    still sends both. Every row folded into an earlier one is counted."""
-    merged: dict[str, PriceRow] = {}
+    """Merge base and special prices per (sku, store_id) and tiers per sku
+    (tiers are not store scoped): a later non-None field overrides an
+    earlier one with the same key. Rows for one SKU in different stores
+    stay separate rows; the merged tiers ride on that SKU's first row.
+    Returns the merged rows and how many rows were folded into another."""
+    merged: dict[tuple[str, int], PriceRow] = {}
+    tiers: dict[str, list] = {}
     for row in rows:
-        if row.sku not in merged:
-            merged[row.sku] = copy.deepcopy(row)
+        if row.tiers is not None:
+            tiers[row.sku] = row.tiers
+        key = (row.sku, row.store_id)
+        if key not in merged:
+            merged[key] = row.model_copy(update={"tiers": None})
             continue
-        target = merged[row.sku]
-        for field, value in row.model_dump(exclude_none=True).items():
-            setattr(target, field, getattr(row, field))
-    return list(merged.values()), len(rows) - len(merged)
+        for field in ("price", "special_price", "special_from", "special_to"):
+            if getattr(row, field) is not None:
+                setattr(merged[key], field, getattr(row, field))
 
-
-def _tier_key(website_id, customer_group, qty, price, price_type):
-    return (
-        int(website_id),
-        str(customer_group),
-        normalize(qty, "decimal"),
-        normalize(price, "decimal"),
-        price_type,
-    )
-
-
-def _special_key(price, price_from, price_to):
-    return (normalize(price, "decimal"), normalize(price_from, "datetime"), normalize(price_to, "datetime"))
-
-
-def _price_unchanged(row: PriceRow, current: dict, website_ids: dict) -> bool:
-    base = current["base"].get(row.store_id)
-    if row.price is not None and normalize(base, "decimal") != normalize(row.price, "decimal"):
-        return False
-    if row.special_price is not None:
-        wanted = _special_key(row.special_price, row.special_from, row.special_to)
-        found = [
-            _special_key(item.get("price"), item.get("price_from"), item.get("price_to"))
-            for item in current["special"]
-            if item.get("store_id") == row.store_id
-        ]
-        if wanted not in found:
-            return False
-    if row.tiers is not None:
-        known = {"all": 0, **website_ids}
-        if any(tier.website not in known and not tier.website.isdigit() for tier in row.tiers):
-            return False
-        wanted_tiers = sorted(
-            _tier_key(known.get(t.website, t.website), t.customer_group, t.qty, t.price, t.price_type)
-            for t in row.tiers
-        )
-        current_tiers = sorted(
-            _tier_key(t["website_id"], t["customer_group"], t["quantity"], t["price"], t["price_type"])
-            for t in current["tiers"]
-        )
-        if wanted_tiers != current_tiers:
-            return False
-    return True
+    result = list(merged.values())
+    for row in result:
+        row.tiers = tiers.pop(row.sku, None)
+    return result, len(rows) - len(merged)
 
 
 def import_prices(
@@ -377,7 +310,7 @@ def import_prices(
     route, so `mode` is ignored."""
     valid, invalid = _validate(PriceRow, rows, "sku")
     merged, duplicates = _merge_prices(valid)
-    snapshot = snapshot_prices(resource, [row.sku for row in merged])
+    snapshot = snapshot_prices(resource, list(dict.fromkeys(row.sku for row in merged)))
     website_ids = {}
     if any(row.tiers for row in merged):
         website_ids = {item["code"]: item["id"] for item in resource.get("store/websites")}
@@ -387,7 +320,7 @@ def import_prices(
         changed = [
             row
             for row in merged
-            if row.sku not in snapshot or not _price_unchanged(row, snapshot[row.sku], website_ids)
+            if row.sku not in snapshot or not price_matches_snapshot(row, snapshot[row.sku], website_ids)
         ]
         skipped = len(merged) - len(changed)
 

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Callable, Literal
 
+from dagster_magento.resolvers import ResolveError
 from dagster_magento.upload import chunk_rows
 
 # Production hit "URI too large" above 50 SKUs per URL when filtering by
@@ -218,3 +219,153 @@ def split_changed(
             skipped += 1
 
     return changed, skipped
+
+
+# The product fields snapshot_products must read for product_matches_snapshot;
+# custom attributes come back on top of these.
+PRODUCT_SNAPSHOT_FIELDS = [
+    "type_id",
+    "attribute_set_id",
+    "status",
+    "name",
+    "price",
+    "visibility",
+    "weight",
+    "extension_attributes",
+]
+_PRODUCT_FIELD_KINDS = {
+    "type_id": "text",
+    "attribute_set_id": "int",
+    "status": "int",
+    "name": "text",
+    "price": "decimal",
+    "visibility": "int",
+    "weight": "decimal",
+}
+# Row parts no snapshot reads back. A row carrying any of them can never be
+# proven unchanged, so it always counts as changed.
+_UNSNAPSHOTTED_PRODUCT_PARTS = (
+    "store_values",
+    "variations",
+    "configurable_attributes",
+    "bundle_options",
+    "grouped_links",
+    "downloadable_links",
+    "downloadable_samples",
+)
+
+
+def _attribute_kind_value(meta, value):
+    if meta.frontend_input == "select":
+        return str(value)
+    if meta.frontend_input == "multiselect":
+        return normalize(value, "multiselect")
+    return normalize(value, "decimal" if meta.backend_type == "decimal" else "text")
+
+
+def _row_option_ids(code: str, value, meta, resolver):
+    if meta.frontend_input == "select":
+        return resolver.option_id(code, value, create=False)
+    if meta.frontend_input == "multiselect":
+        labels = value.split(",") if isinstance(value, str) else value
+        return [resolver.option_id(code, str(label).strip(), create=False) for label in labels]
+    return value
+
+
+def product_matches_snapshot(row, snap: dict, resolver) -> bool:
+    """True only when everything the product writer would send for `row`
+    already equals `snap` (one snapshot_products entry read with
+    PRODUCT_SNAPSHOT_FIELDS). Compared: the scalar fields the row sets, its
+    custom attributes (labels resolved to option ids without creating
+    any), its website ids, and its category ids when it sets categories.
+
+    A false "unchanged" would silently drop a real update, so every doubt
+    answers False: an unresolvable label, set, website or category, a
+    missing extension_attributes, or any row part no snapshot covers
+    (store values and type-specific parts). Images are not compared here;
+    import_media owns them.
+    """
+    if any(getattr(row, part) for part in _UNSNAPSHOTTED_PRODUCT_PARTS):
+        return False
+    extension = snap.get("extension_attributes") or {}
+    try:
+        desired = {
+            "type_id": row.type,
+            "attribute_set_id": row.attribute_set
+            if row.attribute_set.isdigit()
+            else resolver.attribute_set_id(row.attribute_set),
+        }
+        for field in ("name", "price", "status", "visibility", "weight"):
+            if getattr(row, field) is not None:
+                desired[field] = getattr(row, field)
+        wanted = {field: normalize(value, _PRODUCT_FIELD_KINDS[field]) for field, value in desired.items()}
+        current = {field: normalize(snap.get(field), _PRODUCT_FIELD_KINDS[field]) for field in desired}
+
+        for code, value in row.attributes.items():
+            meta = resolver.attribute(code)
+            wanted[code] = _attribute_kind_value(meta, _row_option_ids(code, value, meta, resolver))
+            current[code] = None if snap.get(code) is None else _attribute_kind_value(meta, snap[code])
+
+        wanted["website_ids"] = sorted(resolver.website_id(code) for code in row.websites)
+        current["website_ids"] = sorted(int(value) for value in extension.get("website_ids") or [])
+        if row.categories:
+            wanted["category_ids"] = sorted(resolver.category_id(path) for path in row.categories)
+            current["category_ids"] = sorted(
+                int(link["category_id"]) for link in extension.get("category_links") or []
+            )
+    except (ResolveError, KeyError):
+        return False
+    return wanted == current
+
+
+def _tier_key(website_id, customer_group, qty, price, price_type):
+    return (
+        int(website_id),
+        str(customer_group),
+        normalize(qty, "decimal"),
+        normalize(price, "decimal"),
+        price_type,
+    )
+
+
+def _special_key(price, price_from, price_to):
+    return (normalize(price, "decimal"), normalize(price_from, "datetime"), normalize(price_to, "datetime"))
+
+
+def price_matches_snapshot(row, snap: dict, website_ids: dict[str, int] | None = None) -> bool:
+    """True when every price part `row` sets already equals `snap` (one
+    snapshot_prices entry): the base price for row.store_id, the special
+    price and dates for row.store_id, and the full tier set (tiers are not
+    store scoped). A tier website code resolves as in the pricing writer
+    ("all" is 0, digits are an id, else `website_ids`); an unknown code
+    means changed so the writer can fail the row."""
+    if row.price is not None:
+        base = snap["base"].get(row.store_id)
+        if normalize(base, "decimal") != normalize(row.price, "decimal"):
+            return False
+    if row.special_price is not None:
+        wanted = _special_key(row.special_price, row.special_from, row.special_to)
+        found = [
+            _special_key(item.get("price"), item.get("price_from"), item.get("price_to"))
+            for item in snap["special"]
+            if item.get("store_id") == row.store_id
+        ]
+        if wanted not in found:
+            return False
+    if row.tiers is not None:
+        known = {"all": 0, **(website_ids or {})}
+        wanted_tiers = []
+        for tier in row.tiers:
+            if tier.website not in known and not tier.website.isdigit():
+                return False
+            website_id = known.get(tier.website, tier.website)
+            wanted_tiers.append(
+                _tier_key(website_id, tier.customer_group, tier.qty, tier.price, tier.price_type)
+            )
+        current_tiers = [
+            _tier_key(t["website_id"], t["customer_group"], t["quantity"], t["price"], t["price_type"])
+            for t in snap["tiers"]
+        ]
+        if sorted(wanted_tiers) != sorted(current_tiers):
+            return False
+    return True

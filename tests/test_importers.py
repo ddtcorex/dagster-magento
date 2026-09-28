@@ -40,7 +40,21 @@ def mock_catalog(m, products=None):
         f"{BASE}/eav/attribute-sets/list",
         json={"items": [{"attribute_set_name": "Default", "attribute_set_id": 4}]},
     )
-    m.get(f"{BASE}/store/websites", json=[{"code": "base", "id": 1}])
+    m.get(f"{BASE}/store/websites", json=[{"code": "base", "id": 1}, {"code": "fr", "id": 2}])
+    m.get(
+        f"{BASE}/categories",
+        json={
+            "id": 1,
+            "name": "Root Catalog",
+            "children_data": [
+                {
+                    "id": 2,
+                    "name": "Default Category",
+                    "children_data": [{"id": 5, "name": "Men"}, {"id": 6, "name": "Women"}],
+                }
+            ],
+        },
+    )
     m.get(
         f"{BASE}/products/attributes",
         json={
@@ -78,6 +92,7 @@ def test_import_products_second_run_reports_all_skipped():
             "name": "Shirt A",
             "price": "10.000000",
             "status": 1,
+            "extension_attributes": {"website_ids": [1]},
             "custom_attributes": [{"attribute_code": "color", "value": "12"}],
         },
         {
@@ -87,6 +102,7 @@ def test_import_products_second_run_reports_all_skipped():
             "name": "Shirt B",
             "price": 12.5,
             "visibility": "4",
+            "extension_attributes": {"website_ids": ["1"]},
             "custom_attributes": [],
         },
     ]
@@ -197,7 +213,10 @@ def test_row_with_several_operations_counts_once():
 
 
 def test_products_link_children_after_parents():
-    rows = [configurable_row("P1", [("C1", "Red")]), {"sku": "C1", "name": "C1", "attributes": {"color": "Red"}}]
+    rows = [
+        configurable_row("P1", [("C1", "Red")]),
+        {"sku": "C1", "name": "C1", "attributes": {"color": "Red"}},
+    ]
     with requests_mock.Mocker() as m:
         mock_catalog(m)
         m.post(f"{BASE}/products", json={})
@@ -315,3 +334,66 @@ def test_stock_source_links_read_stock_ids_when_not_given():
 
     assert result == UploadResult(succeeded=1, failed=0)
     assert writes(m)[0].json() == {"links": [{"stock_id": 2, "source_code": "eu", "priority": 1}]}
+
+
+def existing_product(sku, category_id):
+    return {
+        "sku": sku,
+        "type_id": "simple",
+        "attribute_set_id": 4,
+        "name": sku,
+        "extension_attributes": {
+            "website_ids": [1],
+            "category_links": [{"position": 0, "category_id": str(category_id)}],
+        },
+        "custom_attributes": [],
+    }
+
+
+def test_product_website_or_category_change_is_not_skipped():
+    rows = [
+        {"sku": "A", "name": "A", "categories": ["Women"]},
+        {"sku": "B", "name": "B", "categories": ["Men"], "websites": ["base", "fr"]},
+        {"sku": "C", "name": "C", "categories": ["Men"]},
+    ]
+    existing = [existing_product("A", 5), existing_product("B", 5), existing_product("C", 5)]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m, products=existing)
+        m.put(f"{BASE}/products/A", json={})
+        m.put(f"{BASE}/products/B", json={})
+        result = import_products(make_resource(), rows)
+
+    assert result == UploadResult(succeeded=2, failed=0, skipped_unchanged=1)
+    assert [r.url for r in writes(m)] == [f"{BASE}/products/A", f"{BASE}/products/B"]
+
+
+def test_product_with_store_values_is_never_skipped():
+    rows = [
+        {"sku": "A", "name": "A", "categories": ["Men"], "store_values": {"fr": {"name": "A fr"}}}
+    ]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m, products=[existing_product("A", 5)])
+        m.put(f"{BASE}/products/A", json={})
+        m.put("https://shop.test/rest/fr/V1/products/A", json={})
+        result = import_products(make_resource(), rows)
+
+    assert result == UploadResult(succeeded=1, failed=0)
+    assert [r.url for r in writes(m)] == [
+        f"{BASE}/products/A",
+        "https://shop.test/rest/fr/V1/products/A",
+    ]
+
+
+def test_price_rows_for_different_stores_are_both_written():
+    rows = [{"sku": "A", "price": 1, "store_id": 0}, {"sku": "A", "price": 2, "store_id": 1}]
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        for info in ("base-prices-information", "special-price-information", "tier-prices-information"):
+            m.post(f"{BASE}/products/{info}", json=[])
+        m.post(f"{BASE}/products/base-prices", json=[])
+        result = import_prices(make_resource(), rows)
+
+    assert result == UploadResult(succeeded=2, failed=0)
+    assert writes(m)[-1].json() == {
+        "prices": [{"sku": "A", "price": 1, "store_id": 0}, {"sku": "A", "price": 2, "store_id": 1}]
+    }

@@ -2,14 +2,20 @@ from urllib.parse import parse_qs, urlparse
 
 import requests_mock
 
+import pytest
+
 from dagster_magento.diff import (
     normalize,
+    price_matches_snapshot,
+    product_matches_snapshot,
     snapshot_media,
     snapshot_prices,
     snapshot_products,
     snapshot_source_items,
     split_changed,
 )
+from dagster_magento.models import PriceRow, ProductRow
+from dagster_magento.resolvers import AttributeMeta, ResolveError
 from dagster_magento.resource import MagentoResource
 
 
@@ -342,3 +348,149 @@ def test_split_changed_treats_multiselect_order_as_equal():
 
     assert changed == []
     assert skipped_count == 1
+
+
+class StubResolver:
+    """Only the lookups product_matches_snapshot needs, with fixed ids."""
+
+    def __init__(self):
+        self.meta = {
+            "color": AttributeMeta(93, "color", "select", "int", "global", {"red": "12", "blue": "13"}),
+            "sizes": AttributeMeta(94, "sizes", "multiselect", "varchar", "global", {"s": "1", "m": "2"}),
+        }
+
+    def attribute(self, code):
+        if code not in self.meta:
+            raise ResolveError(f"unknown attribute: {code}")
+        return self.meta[code]
+
+    def option_id(self, code, label, create=True):
+        options = self.attribute(code).options
+        if label.lower() not in options:
+            raise ResolveError(f"unknown option {label}")
+        return options[label.lower()]
+
+    def attribute_set_id(self, name):
+        return {"Default": 4}[name]
+
+    def website_id(self, code):
+        return {"base": 1, "fr": 2}[code]
+
+    def category_id(self, path):
+        return {"Men": 5, "Women": 6}[path]
+
+
+def product_snapshot(**overrides):
+    snap = {
+        "type_id": "simple",
+        "attribute_set_id": 4,
+        "name": "Shirt",
+        "price": "10.000000",
+        "status": 1,
+        "extension_attributes": {
+            "website_ids": [1],
+            "category_links": [{"position": 0, "category_id": "5"}],
+        },
+        "color": "12",
+        "sizes": "2,1",
+    }
+    snap.update(overrides)
+    return snap
+
+
+def product_row(**overrides):
+    row = dict(
+        sku="A",
+        name="Shirt",
+        price=10,
+        status=1,
+        categories=["Men"],
+        attributes={"color": "Red", "sizes": ["S", "M"]},
+    )
+    row.update(overrides)
+    return ProductRow(**row)
+
+
+def test_product_matches_snapshot_when_everything_it_sends_is_equal():
+    assert product_matches_snapshot(product_row(), product_snapshot(), StubResolver())
+
+
+def test_product_does_not_match_when_a_field_or_attribute_differs():
+    resolver = StubResolver()
+    assert not product_matches_snapshot(product_row(price=11), product_snapshot(), resolver)
+    assert not product_matches_snapshot(product_row(), product_snapshot(color="13"), resolver)
+
+
+def test_product_does_not_match_when_websites_or_categories_differ():
+    resolver = StubResolver()
+    assert not product_matches_snapshot(product_row(websites=["base", "fr"]), product_snapshot(), resolver)
+    assert not product_matches_snapshot(product_row(categories=["Women"]), product_snapshot(), resolver)
+    assert not product_matches_snapshot(product_row(), product_snapshot(extension_attributes=None), resolver)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"store_values": {"fr": {"name": "Chemise"}}},
+        {
+            "type": "configurable",
+            "configurable_attributes": ["color"],
+            "variations": [{"sku": "A-R", "attributes": {"color": "Red"}}],
+        },
+        {"grouped_links": [{"sku": "B"}]},
+        {"downloadable_samples": [{"title": "t", "url": "https://files.test/s.pdf"}]},
+    ],
+)
+def test_product_with_unsnapshotted_parts_never_matches(part):
+    assert not product_matches_snapshot(product_row(**part), product_snapshot(), StubResolver())
+
+
+def test_product_with_an_unknown_option_label_does_not_match():
+    row = product_row(attributes={"color": "Green", "sizes": ["S", "M"]})
+    assert not product_matches_snapshot(row, product_snapshot(), StubResolver())
+
+
+def price_snapshot():
+    return {
+        "base": {0: 10.0, 1: 9.0},
+        "special": [
+            {"sku": "A", "price": 8.0, "store_id": 1, "price_from": "2026-01-01 00:00:00", "price_to": None}
+        ],
+        "tiers": [
+            {
+                "sku": "A",
+                "price": 7.0,
+                "price_type": "fixed",
+                "website_id": 0,
+                "customer_group": "ALL GROUPS",
+                "quantity": 5,
+            }
+        ],
+    }
+
+
+def test_price_matches_snapshot_per_store_special_and_tiers():
+    row = PriceRow(
+        sku="A",
+        price=9,
+        store_id=1,
+        special_price=8,
+        special_from="2026-01-01",
+        tiers=[{"qty": 5, "price": 7}],
+    )
+    assert price_matches_snapshot(row, price_snapshot())
+
+
+def test_price_does_not_match_another_store_or_changed_tiers():
+    assert not price_matches_snapshot(PriceRow(sku="A", price=9, store_id=0), price_snapshot())
+    assert not price_matches_snapshot(PriceRow(sku="A", price=9, store_id=2), price_snapshot())
+    assert not price_matches_snapshot(PriceRow(sku="A", tiers=[{"qty": 10, "price": 7}]), price_snapshot())
+    assert not price_matches_snapshot(PriceRow(sku="A", special_price=8, store_id=0), price_snapshot())
+
+
+def test_price_tier_website_resolution():
+    snap = price_snapshot()
+    snap["tiers"][0]["website_id"] = 2
+    row = PriceRow(sku="A", tiers=[{"qty": 5, "price": 7, "website": "fr"}])
+    assert price_matches_snapshot(row, snap, website_ids={"fr": 2})
+    assert not price_matches_snapshot(row, snap)
