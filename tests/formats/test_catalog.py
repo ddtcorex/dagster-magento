@@ -90,6 +90,26 @@ def _warn_spy():
             ],
             id="tier_price",
         ),
+        pytest.param(
+            catalog.products_from_rows,
+            [
+                (
+                    2,
+                    {
+                        "sku": "BAD1",
+                        "downloadable_links": "title=Link1,price=0,url=https://example.test/y.zip,downloads=not-a-number",
+                    },
+                ),
+                (
+                    3,
+                    {
+                        "sku": "GOOD1",
+                        "downloadable_links": "title=Link1,price=0,url=https://example.test/y.zip,downloads=5",
+                    },
+                ),
+            ],
+            id="downloadable_links_downloads",
+        ),
     ],
 )
 def test_malformed_numeric_cells_become_row_errors(from_rows, rows):
@@ -241,13 +261,12 @@ def test_store_view_row_for_unknown_sku_is_row_error():
     assert "SKU1" in errors[0].row_ref
 
 
-def test_store_view_code_default_is_treated_as_global_not_a_store_row():
+def test_default_store_code_is_global_by_default():
     # Pins the real shape of the Firebear sample export
     # (product_all_types.csv): every row, including the only one per sku,
     # carries store_view_code "default" rather than leaving it blank.
     # Without this, every product in that file would be rejected as a
-    # "store-view row for unknown sku". categories_from_rows already gives
-    # "default" the same global treatment for store_view.
+    # "store-view row for unknown sku".
     rows = [(2, {"sku": "SKU1", "store_view_code": "default", "name": "Global Name"})]
 
     products, errors = catalog.products_from_rows(rows)
@@ -256,6 +275,25 @@ def test_store_view_code_default_is_treated_as_global_not_a_store_row():
     assert len(products) == 1
     assert products[0].name == "Global Name"
     assert products[0].store_values == {}
+
+
+def test_default_store_code_is_store_level_when_opted_out():
+    # On a real multi-store install "default" is a genuine, addressable
+    # store view code - passing global_store_codes=("",) makes a
+    # store_view_code "default" row fold into store_values["default"]
+    # instead of being written globally through /rest/all/.
+    rows = [
+        (2, {"sku": "SKU1", "store_view_code": "", "name": "Global Name"}),
+        (3, {"sku": "SKU1", "store_view_code": "default", "name": "Default Store Name"}),
+    ]
+
+    products, errors = catalog.products_from_rows(rows, global_store_codes=("",))
+
+    assert errors == []
+    assert len(products) == 1
+    product = products[0]
+    assert product.name == "Global Name"
+    assert product.store_values == {"default": {"name": "Default Store Name"}}
 
 
 def test_products_configurable_variations_build_attributes_and_order():
@@ -336,6 +374,34 @@ def test_products_downloadable_links_url_type():
 
     assert errors == []
     assert products[0].downloadable_links[0].url == "https://example.test/y.zip"
+
+
+def test_downloadable_links_map_downloads():
+    rows = [
+        (
+            2,
+            {
+                "sku": "DL1",
+                "product_type": "downloadable",
+                "downloadable_links": "title=Link1,price=0,url=https://example.test/y.zip,downloads=5",
+            },
+        ),
+        (
+            3,
+            {
+                "sku": "DL2",
+                "product_type": "downloadable",
+                "downloadable_links": "title=Link2,price=0,url=https://example.test/z.zip",
+            },
+        ),
+    ]
+
+    products, errors = catalog.products_from_rows(rows)
+
+    assert errors == []
+    by_sku = {product.sku: product for product in products}
+    assert by_sku["DL1"].downloadable_links[0].downloads == 5
+    assert by_sku["DL2"].downloadable_links[0].downloads is None
 
 
 def test_products_downloadable_links_non_url_type_is_row_error():
@@ -438,6 +504,38 @@ def test_categories_store_view_rows_fold_into_store_values():
 
     assert errors == []
     assert categories[0].store_values == {"fr": {"description": "FR"}}
+
+
+def test_categories_default_store_code_is_global_by_default():
+    # Pins the real shape of the Firebear sample export (categories.csv):
+    # its global rows carry store_view "default" rather than being blank.
+    rows = [(2, {"name": "Default Category/A", "store_view": "default", "description": "Global"})]
+
+    categories, errors = catalog.categories_from_rows(rows)
+
+    assert errors == []
+    assert len(categories) == 1
+    assert categories[0].attributes == {"description": "Global"}
+    assert categories[0].store_values == {}
+
+
+def test_categories_default_store_code_is_store_level_when_opted_out():
+    # On a real multi-store install "default" is a genuine, addressable
+    # store view code - passing global_store_codes=("",) makes a
+    # store_view "default" row fold into store_values["default"] instead
+    # of being written globally.
+    rows = [
+        (2, {"name": "Default Category/A", "store_view": "", "description": "Global"}),
+        (3, {"name": "Default Category/A", "store_view": "default", "description": "Default Store"}),
+    ]
+
+    categories, errors = catalog.categories_from_rows(rows, global_store_codes=("",))
+
+    assert errors == []
+    assert len(categories) == 1
+    category = categories[0]
+    assert category.attributes == {"description": "Global"}
+    assert category.store_values == {"default": {"description": "Default Store"}}
 
 
 # -- attributes -------------------------------------------------------------------

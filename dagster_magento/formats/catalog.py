@@ -67,6 +67,21 @@ def _parse_float(column: str, value: str) -> float:
         raise ValueError(f"{column}: invalid number {value!r}") from error
 
 
+def _parse_int(column: str, value: str) -> int:
+    """Same contract as `_parse_float`, for an integer-valued column."""
+    try:
+        return int(value)
+    except ValueError as error:
+        raise ValueError(f"{column}: invalid number {value!r}") from error
+
+
+def _normalize_global_store_codes(global_store_codes: tuple[str, ...]) -> set[str]:
+    """Case-insensitively normalize a `global_store_codes` tuple (stripped,
+    lowercased) into a set for membership checks, shared by
+    products_from_rows and categories_from_rows."""
+    return {code.strip().lower() for code in global_store_codes}
+
+
 # -- products -----------------------------------------------------------------
 
 # Native inventory/stock columns: stock is imported through
@@ -165,11 +180,13 @@ def _build_downloadable_links(value: str) -> list[dict[str, Any]]:
         if link_type and link_type != "url":
             raise ValueError(f"unsupported downloadable link type: {fields.get('type')!r}")
         price_text = fields.get("price", "")
+        downloads_text = fields.get("downloads", "")
         links.append(
             {
                 "title": fields.get("title", ""),
                 "url": fields.get("url", ""),
                 "price": _parse_float("downloadable_links", price_text) if price_text else 0,
+                "downloads": _parse_int("downloadable_links", downloads_text) if downloads_text else None,
             }
         )
     return links
@@ -290,18 +307,31 @@ def _parse_row_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict
     return kwargs
 
 
-def products_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[ProductRow], list[RowError]]:
+def products_from_rows(
+    rows: Rows,
+    warn=_LOGGER.warning,
+    global_store_codes: tuple[str, ...] = ("", "default"),
+) -> tuple[list[ProductRow], list[RowError]]:
     """Map native product rows onto ProductRow, folding store_view_code
-    rows into the matching global SKU's store_values. `store_view_code`
-    "default" is treated the same as empty (a global row), mirroring
-    categories_from_rows' store_view handling - the Firebear sample export
-    (product_all_types.csv) tags every row, including the only global one
-    per sku, with store_view_code "default" rather than leaving it blank."""
+    rows into the matching global SKU's store_values.
+
+    `store_view_code` values in `global_store_codes` (compared
+    case-insensitively after stripping) are treated as the global row
+    rather than a store-view fold. The default, `("", "default")`, treats
+    "default" as global because both the Firebear sample export
+    (product_all_types.csv) and a native single-store-view export tag
+    every row - including the only, global one per sku - with
+    store_view_code "default" rather than leaving it blank. "default" is
+    also a real, addressable store view code on any multi-store Magento
+    install, so on one of those pass `global_store_codes=("",)` to make
+    "default" rows fold into store_values["default"] (a real per-store
+    override) instead of being written globally through `/rest/all/`."""
     dropped_seen: set[str] = set()
     products: dict[str, ProductRow] = {}
     order: list[str] = []
     store_rows: list[tuple[int, str, str, dict]] = []
     errors: list[RowError] = []
+    global_codes = _normalize_global_store_codes(global_store_codes)
 
     for line, row in rows:
         sku = (row.get("sku") or "").strip()
@@ -310,7 +340,7 @@ def products_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[ProductRo
         if not sku:
             errors.append(RowError(row_ref=f"line {line}", message="missing sku"))
             continue
-        if store_view_code and store_view_code.lower() != "default":
+        if store_view_code.lower() not in global_codes:
             store_rows.append((line, sku, store_view_code, rest))
             continue
 
@@ -371,14 +401,29 @@ def _parse_category_fields(row: dict[str, str], warn, dropped_seen: set[str]) ->
     return attributes
 
 
-def categories_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[CategoryRow], list[RowError]]:
+def categories_from_rows(
+    rows: Rows,
+    warn=_LOGGER.warning,
+    global_store_codes: tuple[str, ...] = ("", "default"),
+) -> tuple[list[CategoryRow], list[RowError]]:
     """Map Firebear categories.csv rows onto CategoryRow, folding non-global
-    store_view rows into the matching global path's store_values."""
+    store_view rows into the matching global path's store_values.
+
+    `store_view` values in `global_store_codes` (compared case-insensitively
+    after stripping) are treated as the global row rather than a store-view
+    fold. The default, `("", "default")`, treats "default" as global because
+    the Firebear sample export (categories.csv) tags its global rows with
+    store_view "default" rather than leaving it blank. "default" is also a
+    real, addressable store view code on any multi-store Magento install, so
+    on one of those pass `global_store_codes=("",)` to make "default" rows
+    fold into store_values["default"] (a real per-store override) instead of
+    being written globally."""
     dropped_seen: set[str] = set()
     categories: dict[str, CategoryRow] = {}
     order: list[str] = []
     store_rows: list[tuple[int, str, str, dict]] = []
     errors: list[RowError] = []
+    global_codes = _normalize_global_store_codes(global_store_codes)
 
     for line, row in rows:
         path = (row.get("name") or "").strip()
@@ -387,7 +432,7 @@ def categories_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[Categor
         if not path:
             errors.append(RowError(row_ref=f"line {line}", message="missing name"))
             continue
-        if store_view and store_view.lower() != "default":
+        if store_view.lower() not in global_codes:
             store_rows.append((line, path, store_view, rest))
             continue
         attributes = _parse_category_fields(rest, warn, dropped_seen)
