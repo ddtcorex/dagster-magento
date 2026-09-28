@@ -1,0 +1,74 @@
+# Changelog
+
+All notable changes to this project are documented in this file. The format
+follows Keep a Changelog and this project adheres to Semantic Versioning.
+
+## [0.2.0] - 2026-09-28
+
+Native catalog import. The v0.1.0 public API is unchanged and still works.
+
+### Added
+
+- Catalog import layer, one function per entity, each composing snapshot,
+  diff, plan and execute: `import_attributes`, `import_attribute_sets`,
+  `import_categories`, `import_products`, `import_prices`, `import_sources`,
+  `import_stocks`, `import_stock_source_links`, `import_source_items`,
+  `import_media`, plus `to_materialize_result`.
+- Pydantic v2 row models (`ProductRow`, `CategoryRow`, `AttributeRow`,
+  `AttributeSetRow`, `PriceRow`, `SourceItemRow`, `SourceRow`, `StockRow`,
+  `StockSourceLinkRow`) and `validate_rows`, which turns a bad row into a
+  `RowError` with its row reference instead of raising.
+- Resolver cache: one `GET products/attributes` preload, HTML-entity aware
+  option label matching, attribute set, website, store view and category
+  path lookup, and parent-first creation of missing category nodes.
+- Diff layer: snapshots products, prices, source items and media, and skips
+  rows that already match (`skipped_unchanged`).
+- Writers for attributes, attribute sets, categories, products of every
+  type (configurable, bundle, grouped, downloadable), price storage, MSI
+  inventory and media. Writers are pure: they return `Operation` values
+  with an optional `BulkSpec` and never make an HTTP call.
+- Executor with `sync` and `bulk` modes: 1000-row chunks for list
+  endpoints, 200-row chunks for bulk, per-operation id mapping of the
+  detailed status, one retry for status 2, and `pending` plus a consumer
+  hint when the timeout expires with the queue still open.
+- `MagentoResource`: retry with backoff on 429, 502, 503 and 504 honouring
+  `Retry-After`, new `put` and `delete`, and a per-call `store_code`
+  override for store-view writes.
+- File adapters: `read_rows` for csv, json and xlsx, and mappers for the
+  native import columns (`additional_attributes`,
+  `configurable_variations`, `bundle_values`, `associated_skus`,
+  `downloadable_links`, `categories`, image columns and the
+  `advanced_pricing` tier columns).
+- `xlsx` extra (openpyxl) and the `samples` and `live` pytest markers,
+  both excluded from the default run.
+- `scripts/sandbox.sh`: a disposable govard Magento 2.4.9 sandbox with
+  indexers on schedule, full page cache, four `async.operations.all`
+  consumers and `cron_consumers_runner` configured for bulk runs.
+- Live end-to-end suite on that sandbox: full sample catalog import in sync
+  mode, a rerun that is skipped by the diff, the same catalog in bulk mode
+  after a reset, price to full-page-cached storefront after cron,
+  store-scoped bulk update, and special price date round trip. The bulk
+  test also documents a measured sandbox defect: Magento's consumer drops a
+  variable subset of the published operations, and the library reports
+  those rows `pending` instead of success (see
+  `tests/live/test_catalog_e2e.py`).
+
+### Changed
+
+- `UploadResult` gained `pending` and `skipped_unchanged` (defaults keep
+  v0.1.0 construction working), a `merge`, and error dicts carrying
+  `row_ids`, `status`, `status_code` and `message`.
+- `get`, `post` and `get_paginated` take a `store_code` keyword.
+- HTTP retries: every 429, 502, 503 and 504 is retried up to three times
+  with 0.5 s, 1 s and 2 s backoff plus jitter, and a 401 refresh is scoped
+  to the request that saw it.
+
+## [0.1.0] - 2026-08-08
+
+- `MagentoResource` with admin token authentication, `get`,
+  `get_paginated`, `post` and the chunked, catch-log-continue
+  `upload_rows`.
+- `UploadResult(succeeded, failed, errors)` and `MagentoAuthError`, which
+  always aborts instead of being absorbed as a per-row failure.
+- `password` is declared `repr=False` with `dagster__is_secret`, so it never
+  appears in a `repr()` or in the Dagster launchpad.
