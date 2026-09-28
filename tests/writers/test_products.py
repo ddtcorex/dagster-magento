@@ -348,3 +348,20 @@ def test_reserved_keys_in_attributes_fail_the_row():
     assert "sku" in result.failed[0].message
     assert result.failed[0].message.index("price") < result.failed[0].message.index("sku")
     assert "shadow writer-owned keys" in result.failed[0].message
+
+
+def test_configurable_attributes_are_preloaded():
+    """A configurable row may carry no plain attribute at all; its
+    configurable attribute codes must still be preloaded, or the real
+    resolver raises "unknown attribute" while planning the options."""
+    row = ProductRow(
+        sku="CFG1",
+        type="configurable",
+        websites=["base"],
+        configurable_attributes=["color", "size"],
+    )
+
+    resolver = _resolver()
+    plan_products([row], resolver, existing=set())
+
+    assert {"color", "size"} <= set(resolver.preloaded_codes)

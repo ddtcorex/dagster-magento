@@ -179,8 +179,20 @@ def test_to_materialize_result_raises_above_ratio_after_metadata(monkeypatch):
     assert materialized.metadata["failed"] == 1
     assert materialized.metadata["skipped_unchanged"] == 3
 
+    logger.messages.clear()
     with pytest.raises(MagentoImportError):
         to_materialize_result(result, fail_on_error_ratio=0.1)
+    assert any("'failed': 1" in message for message in logger.messages)
+
+
+def test_importer_logs_counts_before_its_own_ratio_raise(monkeypatch):
+    logger = RecordingLogger()
+    monkeypatch.setattr(importers, "get_dagster_logger", lambda: logger)
+    rows = [{"source_code": "us", "name": "US"}]
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        with pytest.raises(MagentoImportError):
+            import_sources(make_resource(), rows, fail_on_error_ratio=0.5)
     assert any("'failed': 1" in message for message in logger.messages)
 
 
@@ -210,6 +222,7 @@ def test_row_with_several_operations_counts_once():
 
     assert (result.succeeded, result.failed) == (1, 1)
     assert [error["row_ids"] for error in result.errors] == [["P1"]]
+    assert "child missing" in result.errors[0]["message"]
 
 
 def test_products_link_children_after_parents():
@@ -397,3 +410,42 @@ def test_price_rows_for_different_stores_are_both_written():
     assert writes(m)[-1].json() == {
         "prices": [{"sku": "A", "price": 1, "store_id": 0}, {"sku": "A", "price": 2, "store_id": 1}]
     }
+
+
+def test_failed_parent_sends_no_configurable_requests():
+    with requests_mock.Mocker() as m:
+        mock_catalog(m)
+        m.post(f"{BASE}/products", status_code=400, json={"message": "invalid product"})
+        m.post(f"{BASE}/configurable-products/P1/options", json=1)
+        m.post(f"{BASE}/configurable-products/P1/child", json=True)
+        result = import_products(make_resource(), [configurable_row("P1", [("C1", "Red")])])
+
+    assert (result.succeeded, result.failed) == (0, 1)
+    assert not any("configurable-products/" in r.url for r in m.request_history)
+
+
+def disable_snapshot(status):
+    snap = existing_product("A", 5)
+    snap["status"] = status
+    return snap
+
+
+def test_disable_writes_enabled_product_even_when_fields_match():
+    with requests_mock.Mocker() as m:
+        mock_catalog(m, products=[disable_snapshot(1)])
+        m.put(f"{BASE}/products/A", json={})
+        result = import_products(
+            make_resource(), [{"sku": "A", "name": "A", "categories": ["Men"]}], behavior="disable"
+        )
+
+    assert result == UploadResult(succeeded=1, failed=0)
+    assert writes(m)[0].json()["product"] == {"sku": "A", "status": 2}
+
+
+def test_disable_skips_already_disabled_product():
+    with requests_mock.Mocker() as m:
+        mock_catalog(m, products=[disable_snapshot("2")])
+        result = import_products(make_resource(), [{"sku": "A", "status": 1}], behavior="disable")
+
+    assert result == UploadResult(succeeded=0, failed=0, skipped_unchanged=1)
+    assert writes(m) == []

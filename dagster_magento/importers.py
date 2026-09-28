@@ -137,6 +137,12 @@ def _complete(
     folded = _fold_by_row(
         row_ids, result, plan.failed, validation_failed, diff_skipped + len(plan.skipped) + noop
     )
+    return _check_ratio(folded, fail_on_error_ratio)
+
+
+def _check_ratio(folded: UploadResult, fail_on_error_ratio: float | None) -> UploadResult:
+    # Logged before the check so a raise still leaves the counts in the run log.
+    get_dagster_logger().info(f"Magento import result: {folded.to_metadata()}")
     check_error_ratio(folded, fail_on_error_ratio)
     return folded
 
@@ -222,8 +228,7 @@ def import_attribute_sets(
     failed_names = {error.row_ref for error in plan_failed}
     unchanged = sum(1 for row in valid if row.name not in touched and row.name not in failed_names)
     folded = _fold_by_row(list(dict.fromkeys(touched)), result, plan_failed, invalid, unchanged)
-    check_error_ratio(folded, fail_on_error_ratio)
-    return folded
+    return _check_ratio(folded, fail_on_error_ratio)
 
 
 def import_categories(
@@ -240,6 +245,13 @@ def import_categories(
 
 
 # -- products -------------------------------------------------------------------
+
+
+def _product_unchanged(row: ProductRow, snap: dict, resolver, behavior: str) -> bool:
+    # disable only ever writes status 2, so the row's own fields are irrelevant.
+    if behavior == "disable":
+        return normalize(snap.get("status"), "int") == 2
+    return product_matches_snapshot(row, snap, resolver)
 
 
 def import_products(
@@ -261,7 +273,7 @@ def import_products(
         changed = [
             row
             for row in valid
-            if row.sku not in snapshot or not product_matches_snapshot(row, snapshot[row.sku], resolver)
+            if row.sku not in snapshot or not _product_unchanged(row, snapshot[row.sku], resolver, behavior)
         ]
         skipped = len(valid) - len(changed)
 
@@ -269,8 +281,15 @@ def import_products(
     parents = [
         op for op in plan.operations if op.endpoint == "products" or op.endpoint.startswith("products/")
     ]
-    follow_ups = [op for op in plan.operations if op not in parents]
-    result = execute(resource, parents, mode=mode).merge(execute(resource, follow_ups, mode=mode))
+    result = execute(resource, parents, mode=mode)
+    # A follow-up of a parent that failed or is still pending would link
+    # options or children onto a product that may not exist; that row is
+    # already counted from the parent's outcome.
+    unsettled = {ref for error in result.errors for ref in error["row_ids"]}
+    follow_ups = [
+        op for op in plan.operations if op not in parents and not set(op.row_refs) & unsettled
+    ]
+    result = result.merge(execute(resource, follow_ups, mode=mode))
     return _complete([row.sku for row in changed], plan, result, invalid, skipped, fail_on_error_ratio)
 
 

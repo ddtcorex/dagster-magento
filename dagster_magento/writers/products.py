@@ -99,6 +99,8 @@ def _attribute_codes(rows: list[ProductRow]) -> set[str]:
     codes: set[str] = set()
     for row in rows:
         codes.update(row.attributes.keys())
+        # apply_type_parts resolves these for the configurable options.
+        codes.update(row.configurable_attributes)
         for localized in row.store_values.values():
             codes.update(localized.keys() - STORE_TOP_LEVEL_KEYS)
     return codes
