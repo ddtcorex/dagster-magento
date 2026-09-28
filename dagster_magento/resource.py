@@ -66,6 +66,21 @@ class MagentoResource(ConfigurableResource):
         headers = {"Authorization": f"Bearer {token}"}
         return requests.request(method, url, headers=headers, timeout=30, **kwargs)
 
+    def _send_timed(
+        self, method: str, url: str, endpoint: str, logger, label: str = "", **kwargs
+    ) -> requests.Response:
+        # Shared by the initial send and every retry site (401 refresh,
+        # RETRY_STATUSES backoff loop) so the timing/logging shape - and the
+        # exact log line text the logging tests assert on - lives in one
+        # place instead of being copy-pasted per call site. `label` is ""
+        # for the first send and " retry" for every retry, matching the
+        # original per-site log lines byte for byte.
+        started = time.monotonic()
+        response = self._send(method, url, self._token, **kwargs)
+        elapsed = time.monotonic() - started
+        logger.debug(f"{method} {endpoint}{label} -> {response.status_code} in {elapsed:.2f}s")
+        return response
+
     def _request(
         self,
         method: str,
@@ -89,10 +104,7 @@ class MagentoResource(ConfigurableResource):
         if self.verbose_logging and "json" in kwargs:
             logger.debug(f"{method} {endpoint} request body: {kwargs['json']}")
 
-        started = time.monotonic()
-        response = self._send(method, url, self._token, **kwargs)
-        elapsed = time.monotonic() - started
-        logger.debug(f"{method} {endpoint} -> {response.status_code} in {elapsed:.2f}s")
+        response = self._send_timed(method, url, endpoint, logger, **kwargs)
 
         # 401 handling is scoped to this single _request call: one refresh-
         # and-retry per call, never a counter shared across calls, so a
@@ -100,10 +112,7 @@ class MagentoResource(ConfigurableResource):
         if response.status_code == 401:
             logger.warning(f"Magento token expired (401 on {endpoint}), refreshing and retrying")
             self._fetch_token()
-            started = time.monotonic()
-            response = self._send(method, url, self._token, **kwargs)
-            elapsed = time.monotonic() - started
-            logger.debug(f"{method} {endpoint} retry -> {response.status_code} in {elapsed:.2f}s")
+            response = self._send_timed(method, url, endpoint, logger, " retry", **kwargs)
 
         attempt = 0
         while response.status_code in self.RETRY_STATUSES and attempt < self._MAX_RETRIES:
@@ -115,10 +124,7 @@ class MagentoResource(ConfigurableResource):
                 f"retrying (attempt {attempt + 1}/{self._MAX_RETRIES}) after {delay:.2f}s"
             )
             self._sleep(delay)
-            started = time.monotonic()
-            response = self._send(method, url, self._token, **kwargs)
-            elapsed = time.monotonic() - started
-            logger.debug(f"{method} {endpoint} retry -> {response.status_code} in {elapsed:.2f}s")
+            response = self._send_timed(method, url, endpoint, logger, " retry", **kwargs)
             attempt += 1
 
         if self.verbose_logging:
