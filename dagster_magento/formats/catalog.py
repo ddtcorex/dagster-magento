@@ -112,8 +112,25 @@ _DROPPED_PRODUCT_COLUMNS = _STOCK_COLUMNS | frozenset(
         # phase 1 out of scope.
         "related_skus", "crosssell_skus", "upsell_skus", "custom_options",
         "hide_from_product_page",
+        # msrp_enabled no longer exists on 2.4; product_options_container
+        # is a non-native duplicate of display_product_options_in.
+        "map_enabled", "product_options_container",
     }
 )
+
+# Export column -> attribute code, the inverse of Magento's
+# Import\Product::$_fieldsMap for the columns that are plain attributes.
+# REST knows only the attribute codes. Values stay as exported: the
+# product writer resolves select labels ("Taxable Goods") to option ids.
+_RENAMED_PRODUCT_COLUMNS = {
+    "tax_class_name": "tax_class_id",
+    "new_from_date": "news_from_date",
+    "new_to_date": "news_to_date",
+    "display_product_options_in": "options_container",
+    "map_price": "minimal_price",
+    "msrp_price": "msrp",
+    "meta_keywords": "meta_keyword",
+}
 
 _IMAGE_ROLE_COLUMNS = [
     ("base_image", "image", "base_image_label"),
@@ -271,8 +288,12 @@ def _assign_product_column(
         ]
     elif column == "downloadable_links":
         kwargs["downloadable_links"] = _build_downloadable_links(value)
+    elif column == "bundle_shipment_type":
+        # Applied after every column (see _parse_row_fields), so it wins
+        # over a shipment_type carried in additional_attributes.
+        kwargs["_bundle_shipment_type"] = value
     else:
-        attributes[column] = value
+        attributes[_RENAMED_PRODUCT_COLUMNS.get(column, column)] = value
 
 
 def _parse_row_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict[str, Any] | str:
@@ -301,6 +322,8 @@ def _parse_row_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict
         except ValueError as error:
             return str(error)
 
+    if "_bundle_shipment_type" in kwargs:
+        attributes["shipment_type"] = kwargs.pop("_bundle_shipment_type")
     if image_fields:
         kwargs["images"] = _build_images(image_fields)
     if attributes:

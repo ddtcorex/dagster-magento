@@ -343,6 +343,54 @@ def test_products_bundle_values_and_bundle_flags():
     assert product.attributes["price_view"] == 1
 
 
+def test_products_rename_native_export_columns_to_attribute_codes():
+    # The native export renames several attributes (Magento's
+    # Import\Product::$_fieldsMap); REST only knows the attribute codes,
+    # so an unmapped column fails the row with "unknown attribute"
+    # (verified live on 2.4.9). Labels stay labels: the product writer
+    # resolves select labels such as "Taxable Goods" to option ids.
+    calls, warn = _warn_spy()
+    rows = [
+        (
+            2,
+            {
+                "sku": "BUNDLE1",
+                "product_type": "bundle",
+                "tax_class_name": "Taxable Goods",
+                "new_from_date": "2017-01-01 12:12",
+                "new_to_date": "2017-02-02 12:12",
+                "display_product_options_in": "Block after Info Column",
+                "map_price": "10",
+                "msrp_price": "11",
+                "meta_keywords": "a, b",
+                "additional_attributes": "shipment_type=together,color=Red",
+                "bundle_shipment_type": "separately",
+                "map_enabled": "0",
+                "product_options_container": "Block after Info Column",
+            },
+        )
+    ]
+
+    products, errors = catalog.products_from_rows(rows, warn=warn)
+
+    assert errors == []
+    assert products[0].attributes == {
+        "tax_class_id": "Taxable Goods",
+        "news_from_date": "2017-01-01 12:12",
+        "news_to_date": "2017-02-02 12:12",
+        "options_container": "Block after Info Column",
+        "minimal_price": "10",
+        "msrp": "11",
+        "meta_keyword": "a, b",
+        # bundle_shipment_type wins over the additional_attributes copy.
+        "shipment_type": "separately",
+        "color": "Red",
+    }
+    # map_enabled has no attribute on 2.4 (msrp_enabled was removed) and
+    # product_options_container is a non-native duplicate of options_container.
+    assert len(calls) == 2
+
+
 def test_products_associated_skus_become_grouped_links_with_position():
     rows = [
         (2, {"sku": "GROUPED1", "product_type": "grouped", "associated_skus": "SKU1=2.0000,SKU2"}),
