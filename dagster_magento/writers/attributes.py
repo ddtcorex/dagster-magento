@@ -16,6 +16,23 @@ from dagster_magento.operation import Operation, RowError
 from dagster_magento.resolvers import AttributeMeta, ResolveError, normalize_label
 from dagster_magento.writers import PlanResult
 
+# Keys the writer itself always sets in the attribute payload. A row whose
+# `flags` carries any of these would otherwise have its value silently
+# overridden by the last-write-wins `**row.flags` spread - reject the row
+# instead of guessing which value the caller meant.
+RESERVED_ATTRIBUTE_KEYS = frozenset(
+    {
+        "attribute_code",
+        "attribute_id",
+        "frontend_input",
+        "default_frontend_label",
+        "frontend_labels",
+        "scope",
+        "is_user_defined",
+        "options",
+    }
+)
+
 
 def plan_attributes(
     rows: list[AttributeRow], resolver, behavior: str = "upsert"
@@ -30,6 +47,16 @@ def plan_attributes(
     failed: list[RowError] = []
 
     for row in rows:
+        shadowed = sorted(RESERVED_ATTRIBUTE_KEYS & row.flags.keys())
+        if shadowed:
+            failed.append(
+                RowError(
+                    row_ref=row.code,
+                    message=f"flags shadow writer-owned keys: {', '.join(shadowed)}",
+                )
+            )
+            continue
+
         try:
             meta = resolver.attribute(row.code)
         except ResolveError:

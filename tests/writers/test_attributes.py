@@ -117,3 +117,28 @@ def test_create_only_skips_existing_codes():
     assert len(result.operations) == 1
     assert result.operations[0].endpoint == "products/attributes"
     assert result.operations[0].row_refs == ("size",)
+
+
+def test_flags_overlapping_reserved_keys_fail_the_row():
+    resolver = FakeResolver()
+    # "scope" and "options" both shadow keys the writer sets itself -
+    # letting the spread win would silently override the writer's own
+    # scope/options with whatever the row's flags happen to carry.
+    row = AttributeRow(
+        code="color",
+        frontend_input="select",
+        label="Color",
+        flags={"scope": "website", "options": [], "is_searchable": True},
+    )
+
+    result = plan_attributes([row], resolver)
+
+    assert result.operations == []
+    assert len(result.failed) == 1
+    assert result.failed[0].row_ref == "color"
+    # sorted, and only the actually-reserved keys - "is_searchable" is a
+    # legitimate flag and must not be named.
+    assert "options" in result.failed[0].message
+    assert "scope" in result.failed[0].message
+    assert result.failed[0].message.index("options") < result.failed[0].message.index("scope")
+    assert "is_searchable" not in result.failed[0].message
