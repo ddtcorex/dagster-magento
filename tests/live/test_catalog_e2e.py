@@ -275,24 +275,33 @@ def product_is_diffable(row: ProductRow) -> bool:
 def test_same_catalog_imports_in_bulk_mode(catalog):
     """Same catalog, bulk submission path, after a sandbox reset.
 
-    Environment blocker, measured 2026-09-28 on Magento 2.4.9 with the four
-    `async.operations.all` consumers `scripts/sandbox.sh consumers` starts:
-    the consumer drops a variable subset of the published operations. The
-    RabbitMQ counters for the 18-operation product bulk read publish 20,
-    deliver 20, ack 14; the six lost operations are never started at all
-    (`magento_operation.status = 4`, `started_at` NULL, no `error_code`), and
-    Magento logs nothing for them. The library therefore reports them
-    `pending` after its timeout, exactly as designed, and the rows they
-    belong to do not exist for the later price and media stages.
+    Magento publishes the messages of an async bulk before it commits the
+    rows those messages belong to: `MassSchedule::publishMass` calls
+    `BulkManagement::scheduleBulk`, which publishes on the broker and
+    commits, and only afterwards does `SaveMultipleOperations::execute`
+    insert `magento_operation`. A consumer can therefore reach its row while
+    that insert is still uncommitted. On MariaDB under its default
+    REPEATABLE READ the consumer's
+    `UPDATE magento_operation SET started_at = ...` then fails with
+    "SQLSTATE[HY000]: General error: 1020 Record has changed since last read
+    in table 'magento_operation'", `MassConsumerEnvelopeCallback::execute`
+    catches it and answers `reject($message, false)`, and the message is
+    dropped without requeue: the row keeps `status = 4` (open),
+    `started_at` stays NULL and nothing retries it.
 
-    It is neither concurrency nor store scope. Nine 5-operation probe bursts
-    lost 4, 4, 4, 3, 0, 4, 0, 0 and 4 operations respectively with four
-    consumers running, and with a single consumer one burst lost 1 while the
-    next lost none; bursts through `/rest/all/` and through a store code lose
-    operations alike. Until that loss is understood, this test can fail on
-    `pending` rows while `test_full_sample_catalog_imports_in_sync_mode`,
-    `test_second_run_is_all_skipped` and the three tests in
-    test_price_storefront.py are unaffected.
+    Measured 2026-09-28 on Magento 2.4.9 with MariaDB 11.8 and four
+    `async.operations.all` consumers: 30 of 88 published operations were
+    dropped that way (RabbitMQ counters publish 88, deliver 88, ack 58,
+    redeliver 0, messages 0), and `var/log/system.log` carried exactly one
+    "Message has been rejected: ... 1020 ..." line per lost operation. Held
+    open on purpose, by keeping the operation insert uncommitted for a fixed
+    400 ms, the same race costs 4 of 20 operations and writes its 4 lines.
+
+    The sandbox this suite runs on sets READ COMMITTED
+    (`scripts/sandbox.sh` `write_db_isolation_config`, through
+    app/etc/env.php's driver_options); under the same forced 400 ms window
+    three runs of 20 operations then lost none. Nothing here is relaxed for
+    it: the import still has to leave no operation pending.
     """
     started = time.monotonic()
     sandbox("reset", timeout=3600)

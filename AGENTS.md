@@ -158,11 +158,14 @@ consecutive-failure circuit breaker if it ever bites a real consumer.
   `AssetExecutionContext`), verify the installed version's API instead of
   assuming: it changed during this package's own development
   (`materialize(..., input_values=...)` does not exist on 1.13.17).
-- One live test is known red on the sandbox for a measured environment
-  defect, not a library bug: `test_same_catalog_imports_in_bulk_mode`. Its
-  docstring carries the measurement (the Magento consumer drops a variable
-  subset of published bulk operations and leaves the rows at status 4 with
-  nothing logged). Do not weaken the assertion to make it green.
+- `test_same_catalog_imports_in_bulk_mode` used to be red on the sandbox for
+  a measured environment defect, not a library bug, and it is now green: on
+  MariaDB, Magento publishes an async bulk on the broker before it commits
+  the rows that bulk belongs to, so a consumer can reach its row while the
+  insert is still uncommitted, fail with SQLSTATE 1020 ("Record has changed
+  since last read"), and have its message dropped without requeue. The
+  sandbox sets `READ COMMITTED` for it. Its docstring carries the
+  measurement, and the assertion must not be weakened to make it green.
 
 ## Workflow
 
