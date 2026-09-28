@@ -1,0 +1,317 @@
+import pytest
+import requests_mock
+
+from dagster_magento import importers
+from dagster_magento.executor import MagentoImportError
+from dagster_magento.importers import (
+    import_attribute_sets,
+    import_prices,
+    import_products,
+    import_source_items,
+    import_sources,
+    import_stock_source_links,
+    to_materialize_result,
+)
+from dagster_magento.resource import MagentoAuthError, MagentoResource
+from dagster_magento.upload import UploadResult
+
+BASE = "https://shop.test/rest/all/V1"
+
+
+def make_resource(**overrides):
+    defaults = dict(
+        base_url="https://shop.test",
+        username="admin",
+        password="secret-password",
+        store_view="all",
+    )
+    defaults.update(overrides)
+    resource = MagentoResource(**defaults)
+    resource._sleep = lambda seconds: None  # tests must never actually sleep
+    return resource
+
+
+def mock_catalog(m, products=None):
+    """Token, attribute set, website and attribute metadata every product
+    import needs, plus the snapshot GET returning `products`."""
+    m.post(f"{BASE}/integration/admin/token", json="token")
+    m.get(f"{BASE}/products", json={"items": products or []})
+    m.get(
+        f"{BASE}/eav/attribute-sets/list",
+        json={"items": [{"attribute_set_name": "Default", "attribute_set_id": 4}]},
+    )
+    m.get(f"{BASE}/store/websites", json=[{"code": "base", "id": 1}])
+    m.get(
+        f"{BASE}/products/attributes",
+        json={
+            "items": [
+                {
+                    "attribute_id": 93,
+                    "attribute_code": "color",
+                    "frontend_input": "select",
+                    "backend_type": "int",
+                    "options": [
+                        {"label": " ", "value": ""},
+                        {"label": "Red", "value": "12"},
+                        {"label": "Blue", "value": "13"},
+                    ],
+                }
+            ]
+        },
+    )
+
+
+def writes(m):
+    return [r for r in m.request_history if r.method in ("POST", "PUT", "DELETE") and "token" not in r.url]
+
+
+def test_import_products_second_run_reports_all_skipped():
+    rows = [
+        {"sku": "A", "name": "Shirt A", "price": 10, "status": 1, "attributes": {"color": "Red"}},
+        {"sku": "B", "name": "Shirt B", "price": 12.5, "visibility": 4},
+    ]
+    existing = [
+        {
+            "sku": "A",
+            "type_id": "simple",
+            "attribute_set_id": 4,
+            "name": "Shirt A",
+            "price": "10.000000",
+            "status": 1,
+            "custom_attributes": [{"attribute_code": "color", "value": "12"}],
+        },
+        {
+            "sku": "B",
+            "type_id": "simple",
+            "attribute_set_id": 4,
+            "name": "Shirt B",
+            "price": 12.5,
+            "visibility": "4",
+            "custom_attributes": [],
+        },
+    ]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m, products=existing)
+        result = import_products(make_resource(), rows)
+
+    assert result == UploadResult(succeeded=0, failed=0, skipped_unchanged=2)
+    assert writes(m) == []
+
+
+def test_import_prices_uses_base_prices_not_products_endpoint():
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        for info in ("base-prices-information", "special-price-information", "tier-prices-information"):
+            m.post(f"{BASE}/products/{info}", json=[])
+        m.post(f"{BASE}/products/base-prices", json=[])
+        result = import_prices(make_resource(), [{"sku": "A", "price": 9.99}], mode="bulk")
+
+    assert result == UploadResult(succeeded=1, failed=0)
+    sent = writes(m)[-1]
+    assert sent.url == f"{BASE}/products/base-prices"
+    assert sent.json() == {"prices": [{"sku": "A", "price": 9.99, "store_id": 0}]}
+    assert not any(r.url.startswith(f"{BASE}/products/A") for r in m.request_history)
+    assert not any("async/bulk" in r.url for r in m.request_history)
+
+
+def test_import_products_bulk_mode_submits_async_bulk():
+    with requests_mock.Mocker() as m:
+        mock_catalog(m)
+        m.post("https://shop.test/rest/all/async/bulk/V1/products", json={"bulk_uuid": "u1"})
+        m.get(f"{BASE}/bulk/u1/detailed-status", json={"operations_list": [{"id": 0, "status": 1}]})
+        result = import_products(make_resource(), [{"sku": "NEW", "name": "New"}], mode="bulk")
+
+    assert result == UploadResult(succeeded=1, failed=0)
+    bulk_request = writes(m)[0]
+    assert bulk_request.url == "https://shop.test/rest/all/async/bulk/V1/products"
+    assert bulk_request.json()[0]["product"]["sku"] == "NEW"
+
+
+def test_validation_failures_are_counted_as_failed():
+    rows = [
+        {"source_code": "eu", "name": "EU", "country_id": "FR", "postcode": "75001"},
+        {"source_code": "us", "name": "US"},
+    ]
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        m.post(f"{BASE}/inventory/sources", json={})
+        result = import_sources(make_resource(), rows)
+
+    assert (result.succeeded, result.failed) == (1, 1)
+    assert result.errors[0]["row_ids"] == ["us"]
+    assert result.errors[0]["status"] == "failed"
+    assert "country_id" in result.errors[0]["message"]
+    assert len(writes(m)) == 1
+
+
+class RecordingLogger:
+    def __init__(self):
+        self.messages = []
+
+    def info(self, message):
+        self.messages.append(message)
+
+    warning = info
+
+
+def test_to_materialize_result_raises_above_ratio_after_metadata(monkeypatch):
+    logger = RecordingLogger()
+    monkeypatch.setattr(importers, "get_dagster_logger", lambda: logger)
+    result = UploadResult(succeeded=1, failed=1, skipped_unchanged=3)
+
+    materialized = to_materialize_result(result)
+    assert materialized.metadata["failed"] == 1
+    assert materialized.metadata["skipped_unchanged"] == 3
+
+    with pytest.raises(MagentoImportError):
+        to_materialize_result(result, fail_on_error_ratio=0.1)
+    assert any("'failed': 1" in message for message in logger.messages)
+
+
+def configurable_row(sku, children):
+    return {
+        "sku": sku,
+        "type": "configurable",
+        "name": sku,
+        "configurable_attributes": ["color"],
+        "variations": [
+            {"sku": child, "attributes": {"color": color}} for child, color in children
+        ],
+    }
+
+
+def test_row_with_several_operations_counts_once():
+    rows = [configurable_row("P1", [("P1-R", "Red"), ("P1-B", "Blue")]), {"sku": "S1", "name": "S1"}]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m)
+        m.post(f"{BASE}/products", json={})
+        m.post(f"{BASE}/configurable-products/P1/options", json=1)
+        m.post(
+            f"{BASE}/configurable-products/P1/child",
+            [{"json": True}, {"status_code": 400, "json": {"message": "child missing"}}],
+        )
+        result = import_products(make_resource(), rows)
+
+    assert (result.succeeded, result.failed) == (1, 1)
+    assert [error["row_ids"] for error in result.errors] == [["P1"]]
+
+
+def test_products_link_children_after_parents():
+    rows = [configurable_row("P1", [("C1", "Red")]), {"sku": "C1", "name": "C1", "attributes": {"color": "Red"}}]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m)
+        m.post(f"{BASE}/products", json={})
+        m.post(f"{BASE}/configurable-products/P1/options", json=1)
+        m.post(f"{BASE}/configurable-products/P1/child", json=True)
+        result = import_products(make_resource(), rows)
+
+    assert result == UploadResult(succeeded=2, failed=0)
+    urls = [r.url for r in writes(m)]
+    last_product = max(i for i, url in enumerate(urls) if url == f"{BASE}/products")
+    first_link = min(i for i, url in enumerate(urls) if "configurable-products" in url)
+    assert last_product < first_link
+
+
+def test_plan_skipped_rows_count_as_skipped_unchanged():
+    existing = [{"sku": "A", "type_id": "simple", "attribute_set_id": 4, "custom_attributes": []}]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m, products=existing)
+        result = import_products(
+            make_resource(), [{"sku": "A", "name": "Renamed"}], diff=False, behavior="create_only"
+        )
+
+    assert result == UploadResult(succeeded=0, failed=0, skipped_unchanged=1)
+    assert writes(m) == []
+
+
+def test_duplicate_price_skus_merge_last_wins():
+    rows = [
+        {"sku": "A", "price": 1, "special_price": 0.5},
+        {"sku": "A", "price": 2},
+    ]
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        for info in ("base-prices-information", "special-price-information", "tier-prices-information"):
+            m.post(f"{BASE}/products/{info}", json=[])
+        m.post(f"{BASE}/products/base-prices", json=[])
+        m.post(f"{BASE}/products/special-price", json=[])
+        result = import_prices(make_resource(), rows)
+
+    assert result == UploadResult(succeeded=1, failed=0, skipped_unchanged=1)
+    sent = {r.url: r.json() for r in writes(m) if "information" not in r.url}
+    assert sent[f"{BASE}/products/base-prices"]["prices"][0]["price"] == 2
+    assert sent[f"{BASE}/products/special-price"]["prices"][0]["price"] == 0.5
+
+
+def test_attribute_sets_converge_in_passes():
+    default = {"attribute_set_name": "Default", "attribute_set_id": 4}
+    apparel = {"attribute_set_name": "Apparel", "attribute_set_id": 10}
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        m.get(
+            f"{BASE}/eav/attribute-sets/list",
+            [{"json": {"items": [default]}}, {"json": {"items": [default, apparel]}}],
+        )
+        m.get(
+            f"{BASE}/products/attribute-sets/groups/list",
+            [
+                {"json": {"items": []}},
+                {"json": {"items": [{"attribute_group_name": "Details", "attribute_group_id": 20}]}},
+            ],
+        )
+        m.post(f"{BASE}/products/attribute-sets", json={"attribute_set_id": 10})
+        m.post(f"{BASE}/products/attribute-sets/groups", json={"attribute_group_id": 20})
+        m.post(f"{BASE}/products/attribute-sets/attributes", json=1)
+        result = import_attribute_sets(
+            make_resource(), [{"name": "Apparel", "groups": {"Details": ["color"]}}]
+        )
+
+    assert result == UploadResult(succeeded=1, failed=0)
+    assert [r.url for r in writes(m)] == [
+        f"{BASE}/products/attribute-sets",
+        f"{BASE}/products/attribute-sets/groups",
+        f"{BASE}/products/attribute-sets/attributes",
+    ]
+
+
+def test_auth_error_propagates_from_importer():
+    rows = [{"source_code": "eu", "name": "EU", "country_id": "FR", "postcode": "75001"}]
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", status_code=401, json={"message": "bad"})
+        with pytest.raises(MagentoAuthError):
+            import_sources(make_resource(), rows)
+
+
+def test_source_items_skip_unchanged_pairs_and_keep_last_duplicate():
+    rows = [
+        {"sku": "A", "source_code": "eu", "quantity": 1, "status": 1},
+        {"sku": "A", "source_code": "eu", "quantity": 5, "status": 1},
+        {"sku": "B", "source_code": "eu", "quantity": 3, "status": 1},
+    ]
+    current = [
+        {"sku": "A", "source_code": "eu", "quantity": 5.0, "status": 1},
+        {"sku": "B", "source_code": "eu", "quantity": 2.0, "status": 1},
+    ]
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        m.get(f"{BASE}/inventory/source-items", json={"items": current})
+        m.post(f"{BASE}/inventory/source-items", json=[])
+        result = import_source_items(make_resource(), rows)
+
+    assert result == UploadResult(succeeded=1, failed=0, skipped_unchanged=2)
+    assert writes(m)[0].json() == {
+        "sourceItems": [{"sku": "B", "source_code": "eu", "quantity": 3.0, "status": 1}]
+    }
+
+
+def test_stock_source_links_read_stock_ids_when_not_given():
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        m.get(f"{BASE}/inventory/stocks", json={"items": [{"name": "EU", "stock_id": 2}]})
+        m.post(f"{BASE}/inventory/stock-source-links", json=[])
+        result = import_stock_source_links(
+            make_resource(), [{"stock": "EU", "source_code": "eu", "priority": 1}]
+        )
+
+    assert result == UploadResult(succeeded=1, failed=0)
+    assert writes(m)[0].json() == {"links": [{"stock_id": 2, "source_code": "eu", "priority": 1}]}
