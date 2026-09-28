@@ -114,10 +114,10 @@ def plan_stock_source_links(
         stock_ids: Mapping of stock name to stock ID.
 
     Returns:
-        PlanResult with operations (one for all valid items) and failed rows.
+        PlanResult with operations (one per valid link) and failed rows.
     """
     failed: list[RowError] = []
-    items: list[dict] = []
+    operations: list[Operation] = []
 
     for row in rows:
         if row.stock not in stock_ids:
@@ -129,29 +129,19 @@ def plan_stock_source_links(
             )
             continue
 
-        items.append(
-            {
-                "stock_id": stock_ids[row.stock],
-                "source_code": row.source_code,
-                "priority": row.priority,
-            }
-        )
-
-    operations: list[Operation] = []
-    if items:
-        # Collect row_refs from successfully processed items
-        row_refs = tuple(
-            f"{row.stock}/{row.source_code}"
-            for row in rows
-            if row.stock in stock_ids
-        )
+        # One operation per link item (executor wraps via list_key).
+        payload = {
+            "stock_id": stock_ids[row.stock],
+            "source_code": row.source_code,
+            "priority": row.priority,
+        }
 
         operations.append(
             Operation(
                 method="POST",
                 endpoint="inventory/stock-source-links",
-                payload={"links": items},
-                row_refs=row_refs,
+                payload=payload,
+                row_refs=(f"{row.stock}/{row.source_code}",),
                 list_key="links",
             )
         )
@@ -163,74 +153,51 @@ def plan_source_items(rows: list[SourceItemRow]) -> PlanResult:
     """Plan inventory source item operations.
 
     Handles duplicate (source_code, sku) pairs by keeping the last and
-    skipping earlier occurrences.
+    skipping earlier occurrences. Duplicate tracking is done in one pass
+    with a dict mapping pair keys to their final row (insertion order
+    preserved by tracking position of last occurrence).
 
     Args:
         rows: List of SourceItemRow objects to process.
 
     Returns:
-        PlanResult with operations, skipped row refs.
+        PlanResult with operations (one per unique pair) and skipped row refs.
     """
-    # Track which (source_code, sku) pairs we've seen and their indices
-    seen_pairs: dict[tuple[str, str], int] = {}
-    items: list[dict] = []
-    row_refs: list[str] = []
+    # Identify duplicates: map (source_code, sku) to the LAST occurrence's row.
+    # On duplicate, mark the earlier row ref as skipped.
+    final_items: dict[tuple[str, str], SourceItemRow] = {}
     skipped: list[str] = []
 
-    for idx, row in enumerate(rows):
+    for row in rows:
         pair_key = (row.source_code, row.sku)
         row_ref = f"{row.source_code}/{row.sku}"
 
-        if pair_key in seen_pairs:
-            # We've seen this pair before; skip the earlier one
-            prev_idx = seen_pairs[pair_key]
-            prev_item_idx = None
-
-            # Find the index of the previous item in our items list
-            # We need to find which item in our items list corresponds to prev_idx
-            for item_idx, item in enumerate(items):
-                if (
-                    item["source_code"] == row.source_code
-                    and item["sku"] == row.sku
-                ):
-                    prev_item_idx = item_idx
-                    break
-
-            if prev_item_idx is not None:
-                # Move the earlier row_ref to skipped
-                skipped.append(row_refs[prev_item_idx])
-                # Replace the item with the new one
-                items[prev_item_idx] = {
-                    "sku": row.sku,
-                    "source_code": row.source_code,
-                    "quantity": row.quantity,
-                    "status": row.status,
-                }
-                # Replace the row_ref
-                row_refs[prev_item_idx] = row_ref
-
-            seen_pairs[pair_key] = idx
+        if pair_key in final_items:
+            # We have a duplicate; the earlier one is skipped.
+            skipped.append(row_ref)
+            # Update to the new (later) row.
+            final_items[pair_key] = row
         else:
-            # First time seeing this pair
-            seen_pairs[pair_key] = idx
-            items.append(
-                {
-                    "sku": row.sku,
-                    "source_code": row.source_code,
-                    "quantity": row.quantity,
-                    "status": row.status,
-                }
-            )
-            row_refs.append(row_ref)
+            # First occurrence of this pair.
+            final_items[pair_key] = row
 
     operations: list[Operation] = []
-    if items:
+
+    # One operation per unique (source_code, sku) pair.
+    for pair_key, row in final_items.items():
+        payload = {
+            "sku": row.sku,
+            "source_code": row.source_code,
+            "quantity": row.quantity,
+            "status": row.status,
+        }
+
         operations.append(
             Operation(
                 method="POST",
                 endpoint="inventory/source-items",
-                payload={"sourceItems": items},
-                row_refs=tuple(row_refs),
+                payload=payload,
+                row_refs=(f"{row.source_code}/{row.sku}",),
                 list_key="sourceItems",
             )
         )

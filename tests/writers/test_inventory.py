@@ -12,6 +12,7 @@ from dagster_magento.writers.inventory import (
     plan_stock_source_links,
     plan_source_items,
 )
+from dagster_magento.executor import execute
 from conftest import FakeResolver
 
 
@@ -195,28 +196,27 @@ def test_links_resolve_stock_name_to_id():
     result = plan_stock_source_links(rows, stock_ids)
 
     assert result.failed == []
-    assert len(result.operations) == 1
+    assert len(result.operations) == 2
 
-    op = result.operations[0]
-    assert op.method == "POST"
-    assert op.endpoint == "inventory/stock-source-links"
-    assert op.list_key == "links"
-    assert op.bulk is None
-    assert op.payload == {
-        "links": [
-            {
-                "stock_id": 10,
-                "source_code": "warehouse-1",
-                "priority": 1,
-            },
-            {
-                "stock_id": 20,
-                "source_code": "warehouse-2",
-                "priority": 2,
-            },
-        ]
+    op1 = result.operations[0]
+    assert op1.method == "POST"
+    assert op1.endpoint == "inventory/stock-source-links"
+    assert op1.list_key == "links"
+    assert op1.bulk is None
+    assert op1.payload == {
+        "stock_id": 10,
+        "source_code": "warehouse-1",
+        "priority": 1,
     }
-    assert op.row_refs == ("Stock 1/warehouse-1", "Stock 2/warehouse-2")
+    assert op1.row_refs == ("Stock 1/warehouse-1",)
+
+    op2 = result.operations[1]
+    assert op2.payload == {
+        "stock_id": 20,
+        "source_code": "warehouse-2",
+        "priority": 2,
+    }
+    assert op2.row_refs == ("Stock 2/warehouse-2",)
 
 
 def test_links_unknown_stock_name_fails_row():
@@ -247,9 +247,8 @@ def test_links_mixed_known_unknown_stocks():
 
     assert len(result.failed) == 1
     assert result.failed[0].row_ref == "unknown/warehouse-2"
-    # Only the known stocks are in the operation
-    assert len(result.operations) == 1
-    assert len(result.operations[0].payload["links"]) == 2
+    # Two operations for the known stocks
+    assert len(result.operations) == 2
 
 
 def test_source_items_use_source_items_list_key():
@@ -269,20 +268,16 @@ def test_source_items_use_source_items_list_key():
     assert op.list_key == "sourceItems"
     assert op.bulk is None
     assert op.payload == {
-        "sourceItems": [
-            {
-                "sku": "SKU-001",
-                "source_code": "warehouse-1",
-                "quantity": 100,
-                "status": 1,
-            }
-        ]
+        "sku": "SKU-001",
+        "source_code": "warehouse-1",
+        "quantity": 100,
+        "status": 1,
     }
     assert op.row_refs == ("warehouse-1/SKU-001",)
 
 
 def test_source_items_multiple_rows():
-    """Multiple source items in one operation."""
+    """Multiple source items produce one operation per unique pair."""
     rows = [
         SourceItemRow(sku="SKU-001", source_code="warehouse-1", quantity=100, status=1),
         SourceItemRow(sku="SKU-002", source_code="warehouse-1", quantity=50, status=1),
@@ -292,15 +287,11 @@ def test_source_items_multiple_rows():
     result = plan_source_items(rows)
 
     assert result.failed == []
-    assert len(result.operations) == 1
+    assert len(result.operations) == 3
 
-    op = result.operations[0]
-    assert len(op.payload["sourceItems"]) == 3
-    assert op.row_refs == (
-        "warehouse-1/SKU-001",
-        "warehouse-1/SKU-002",
-        "warehouse-2/SKU-003",
-    )
+    assert result.operations[0].row_refs == ("warehouse-1/SKU-001",)
+    assert result.operations[1].row_refs == ("warehouse-1/SKU-002",)
+    assert result.operations[2].row_refs == ("warehouse-2/SKU-003",)
 
 
 def test_source_items_duplicate_pair_keeps_last_skips_earlier():
@@ -314,12 +305,12 @@ def test_source_items_duplicate_pair_keeps_last_skips_earlier():
     result = plan_source_items(rows)
 
     assert result.failed == []
-    assert len(result.operations) == 1
-    # Should have 2 items (the duplicate's last row + SKU-002)
-    assert len(result.operations[0].payload["sourceItems"]) == 2
-    # The last SKU-001/warehouse-1 should be in the operation
-    assert result.operations[0].payload["sourceItems"][0]["quantity"] == 200
-    assert result.operations[0].payload["sourceItems"][0]["status"] == 0
+    assert len(result.operations) == 2
+    # First operation is the final SKU-001 with quantity 200
+    assert result.operations[0].payload["quantity"] == 200
+    assert result.operations[0].payload["status"] == 0
+    # Second operation is SKU-002
+    assert result.operations[1].payload["sku"] == "SKU-002"
     # Earlier duplicate should be in skipped
     assert len(result.skipped) == 1
     assert "warehouse-1/SKU-001" in result.skipped
@@ -337,9 +328,8 @@ def test_source_items_three_duplicates_keeps_last_skips_two():
 
     assert result.failed == []
     assert len(result.operations) == 1
-    # Should have 1 item (the last one)
-    assert len(result.operations[0].payload["sourceItems"]) == 1
-    assert result.operations[0].payload["sourceItems"][0]["quantity"] == 300
+    # Should have the last quantity
+    assert result.operations[0].payload["quantity"] == 300
     # Two earlier duplicates should be skipped
     assert len(result.skipped) == 2
     assert all("warehouse-1/SKU-001" in ref for ref in result.skipped)
@@ -355,7 +345,7 @@ def test_source_items_zero_quantity():
 
     assert result.failed == []
     assert len(result.operations) == 1
-    assert result.operations[0].payload["sourceItems"][0]["quantity"] == 0
+    assert result.operations[0].payload["quantity"] == 0
 
 
 def test_source_items_status_values():
@@ -368,8 +358,8 @@ def test_source_items_status_values():
     result = plan_source_items(rows)
 
     assert result.failed == []
-    assert result.operations[0].payload["sourceItems"][0]["status"] == 0
-    assert result.operations[0].payload["sourceItems"][1]["status"] == 1
+    assert result.operations[0].payload["status"] == 0
+    assert result.operations[1].payload["status"] == 1
 
 
 def test_links_empty_stock_ids():
@@ -383,3 +373,95 @@ def test_links_empty_stock_ids():
 
     assert len(result.failed) == 1
     assert len(result.operations) == 0
+
+
+class StubResource:
+    """Stub for testing without HTTP."""
+
+    def __init__(self, responses=None):
+        self.post_calls = []
+        self._responses = list(responses or [])
+
+    def _next_response(self):
+        outcome = self._responses.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+
+        class Response:
+            def json(self):
+                return outcome
+
+        return Response()
+
+    def post(self, endpoint, payload=None, store_code=None):
+        self.post_calls.append((endpoint, payload, store_code))
+        return self._next_response()
+
+
+def test_source_items_run_through_executor_as_one_wrapped_list():
+    """Source items execute as one wrapped list via executor."""
+    rows = [
+        SourceItemRow(sku="SKU-001", source_code="warehouse-1", quantity=100, status=1),
+        SourceItemRow(sku="SKU-002", source_code="warehouse-1", quantity=50, status=1),
+        SourceItemRow(sku="SKU-003", source_code="warehouse-2", quantity=75, status=0),
+    ]
+
+    result = plan_source_items(rows)
+
+    # Stub resource returns empty list (all succeeded)
+    resource = StubResource(responses=[[], [], []])
+    exec_result = execute(resource, result.operations, mode="sync")
+
+    # All 3 rows should succeed
+    assert exec_result.succeeded == 3
+    assert exec_result.failed == 0
+
+    # Verify there was one POST call (executor chunks by list_key)
+    assert len(resource.post_calls) == 1
+
+    endpoint, payload, _ = resource.post_calls[0]
+    # Executor wraps as {"sourceItems": [flat_item1, flat_item2, flat_item3]}
+    assert endpoint == "inventory/source-items"
+    assert "sourceItems" in payload
+    assert len(payload["sourceItems"]) == 3
+    # Verify items are flat (not nested)
+    assert payload["sourceItems"][0] == {
+        "sku": "SKU-001",
+        "source_code": "warehouse-1",
+        "quantity": 100,
+        "status": 1,
+    }
+
+
+def test_links_run_through_executor_as_wrapped_list():
+    """Stock-source links execute as one wrapped list via executor."""
+    stock_ids = {"Stock 1": 10, "Stock 2": 20}
+    rows = [
+        StockSourceLinkRow(stock="Stock 1", source_code="warehouse-1", priority=1),
+        StockSourceLinkRow(stock="Stock 2", source_code="warehouse-2", priority=2),
+    ]
+
+    result = plan_stock_source_links(rows, stock_ids)
+
+    # Stub resource returns empty list (all succeeded)
+    resource = StubResource(responses=[[]])
+    exec_result = execute(resource, result.operations, mode="sync")
+
+    # Both rows should succeed
+    assert exec_result.succeeded == 2
+    assert exec_result.failed == 0
+
+    # Verify there was one POST call (executor chunks by list_key)
+    assert len(resource.post_calls) == 1
+
+    endpoint, payload, _ = resource.post_calls[0]
+    # Executor wraps as {"links": [flat_item1, flat_item2]}
+    assert endpoint == "inventory/stock-source-links"
+    assert "links" in payload
+    assert len(payload["links"]) == 2
+    # Verify items are flat (not nested)
+    assert payload["links"][0] == {
+        "stock_id": 10,
+        "source_code": "warehouse-1",
+        "priority": 1,
+    }
