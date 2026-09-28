@@ -96,3 +96,55 @@ def test_ensure_failure_marks_row_failed():
     assert len(result.operations) == 2
     assert result.operations[0].row_refs == ("Default Category/Found",)
     assert result.operations[1].row_refs == ("Default Category/AlsoFound",)
+
+
+def test_reserved_keys_in_attributes_fail_the_row():
+    """Attributes shadowing id, parent_id, path, or name fail the row."""
+    resolver = FakeResolver(
+        categories={"Default Category/Good": 1, "Default Category/Bad": 2},
+    )
+    rows = [
+        CategoryRow(path="Default Category/Good", attributes={"description": "OK"}),
+        CategoryRow(path="Default Category/Bad", attributes={"id": 999, "name": "Hacked"}),
+    ]
+
+    result = plan_categories(rows, resolver)
+
+    # Good row succeeds, Bad row fails
+    assert len(result.failed) == 1
+    assert result.failed[0].row_ref == "Default Category/Bad"
+    assert "id" in result.failed[0].message
+    assert "name" in result.failed[0].message
+    assert result.failed[0].message.index("id") < result.failed[0].message.index("name")
+    assert "shadow writer-owned keys" in result.failed[0].message
+
+    # Only the good row has operations
+    assert len(result.operations) == 1
+    assert result.operations[0].row_refs == ("Default Category/Good",)
+
+
+def test_localized_name_is_allowed_but_id_is_rejected():
+    """Store values can have "name" but not "id", "parent_id", or "path"."""
+    resolver = FakeResolver(
+        categories={"Default Category/Shirts": 5},
+    )
+    row = CategoryRow(
+        path="Default Category/Shirts",
+        attributes={},
+        store_values={
+            "fr": {"name": "Chemises"},  # OK - localized name is legitimate.
+            "en": {"id": 999, "name": "Shirts"},  # BAD - id shadows writer-owned field.
+        },
+    )
+
+    result = plan_categories([row], resolver)
+
+    # Row should fail due to reserved key in store_values[en]
+    assert len(result.failed) == 1
+    assert result.failed[0].row_ref == "Default Category/Shirts"
+    assert "store_values[en]" in result.failed[0].message
+    assert "id" in result.failed[0].message
+    assert "shadow writer-owned keys" in result.failed[0].message
+
+    # No operations emitted
+    assert len(result.operations) == 0
