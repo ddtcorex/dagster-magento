@@ -340,9 +340,10 @@ def product_matches_snapshot(row, snap: dict, resolver) -> bool:
 
 
 def _tier_key(website_id, customer_group, qty, price, price_type):
+    # Magento reads the group back lowercased ("all groups"), verified live.
     return (
         int(website_id),
-        str(customer_group),
+        str(customer_group).strip().casefold(),
         normalize(qty, "decimal"),
         normalize(price, "decimal"),
         price_type,

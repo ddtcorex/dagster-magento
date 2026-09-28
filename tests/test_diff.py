@@ -533,3 +533,12 @@ def test_price_tier_website_resolution():
     row = PriceRow(sku="A", tiers=[{"qty": 5, "price": 7, "website": "fr"}])
     assert price_matches_snapshot(row, snap, website_ids={"fr": 2})
     assert not price_matches_snapshot(row, snap)
+
+
+def test_price_tier_customer_group_compares_case_insensitively():
+    # Verified live on 2.4.9: tier-prices-information reads the group back
+    # as "all groups" for a tier written as "ALL GROUPS", so a rerun
+    # rewrote every tier price.
+    snap = price_snapshot()
+    snap["tiers"][0]["customer_group"] = "all groups"
+    assert price_matches_snapshot(PriceRow(sku="A", tiers=[{"qty": 5, "price": 7}]), snap)
