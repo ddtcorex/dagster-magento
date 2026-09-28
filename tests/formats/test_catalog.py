@@ -689,3 +689,33 @@ def test_source_items_from_rows_maps_columns():
     assert item.source_code == "default"
     assert item.quantity == 42.5
     assert item.status == 1
+
+
+def test_attributes_rows_map_flags_onto_the_rest_attribute_shape():
+    # Verified live on 2.4.9: POST products/attributes rejects
+    # search_weight and is_used_for_price_rules ("field is not
+    # supported") and wants apply_to as a string array.
+    calls, warn = _warn_spy()
+    rows = [
+        (
+            2,
+            {
+                "store_id": "0",
+                "attribute_code": "color",
+                "frontend_input": "select",
+                "apply_to": "simple,virtual, configurable",
+                "search_weight": "3",
+                "is_used_for_price_rules": "1",
+                "is_searchable": "1",
+            },
+        ),
+        (3, {"store_id": "0", "attribute_code": "size", "frontend_input": "select", "search_weight": "1"}),
+    ]
+
+    attributes, errors = catalog.attributes_from_rows(rows, warn=warn)
+
+    assert errors == []
+    assert attributes[0].flags == {"apply_to": ["simple", "virtual", "configurable"], "is_searchable": True}
+    assert attributes[1].flags == {}
+    # One warning per dropped column, not per row.
+    assert len(calls) == 2

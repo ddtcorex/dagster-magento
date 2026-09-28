@@ -461,14 +461,18 @@ def categories_from_rows(
 _ATTRIBUTE_BOOL_FLAGS = frozenset(
     {
         "is_required", "is_unique", "is_searchable", "is_filterable", "is_comparable",
-        "is_visible_on_front", "is_html_allowed_on_front", "is_used_for_price_rules",
+        "is_visible_on_front", "is_html_allowed_on_front",
         "is_filterable_in_search", "used_in_product_listing", "used_for_sort_by",
         "is_visible_in_advanced_search", "is_wysiwyg_enabled", "is_used_for_promo_rules",
         "is_used_in_grid", "is_visible_in_grid", "is_filterable_in_grid",
     }
 )
-_ATTRIBUTE_INT_FLAGS = frozenset({"position", "search_weight"})
+_ATTRIBUTE_INT_FLAGS = frozenset({"position"})
 _ATTRIBUTE_OTHER_FLAGS = frozenset({"default_value", "note", "apply_to"})
+# Export columns with no field on the REST attribute DTO: POST
+# products/attributes rejects them with "field is not supported"
+# (verified live on 2.4.9), so they are dropped with one warning each.
+_ATTRIBUTE_UNSUPPORTED_COLUMNS = ("search_weight", "is_used_for_price_rules")
 _ATTRIBUTE_FLAG_COLUMNS = _ATTRIBUTE_BOOL_FLAGS | _ATTRIBUTE_INT_FLAGS | _ATTRIBUTE_OTHER_FLAGS
 _ATTRIBUTE_SCOPE = {"0": "store", "1": "global", "2": "website"}
 
@@ -478,6 +482,9 @@ def _convert_attribute_flag(column: str, value: str) -> Any:
         return value == "1"
     if column in _ATTRIBUTE_INT_FLAGS:
         return int(value) if value.lstrip("-").isdigit() else value
+    if column == "apply_to":
+        # The REST DTO types apply_to as string[]; a comma string is rejected.
+        return [part.strip() for part in value.split(",") if part.strip()]
     return value
 
 
@@ -543,6 +550,9 @@ def attributes_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[Attribu
             groups[code] = []
             order.append(code)
         groups[code].append((line, row))
+        for column in _ATTRIBUTE_UNSUPPORTED_COLUMNS:
+            if (row.get(column) or "").strip():
+                _warn_once(column, warn, warned)
 
     attribute_rows: list[AttributeRow] = []
     for code in order:
