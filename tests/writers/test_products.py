@@ -120,6 +120,46 @@ def test_select_and_multiselect_labels_resolve_to_option_ids():
     assert set(resolver.preloaded_codes) == {"color", "tags"}
 
 
+def test_non_string_select_values_are_option_ids_and_boolean_labels_resolve():
+    # Found live on 2.4.9: the file adapter emits bundle flags such as
+    # price_view (a select) as the option id 0/1 and the resolver crashed
+    # treating the int as a label; boolean attributes (eco_collection)
+    # arrive as Yes/No labels and have no options to resolve against.
+    price_view = AttributeMeta(
+        id=1, code="price_view", frontend_input="select", backend_type="int",
+        scope="global", options={"price range": "0", "as low as": "1"},
+    )
+    size = AttributeMeta(
+        id=2, code="size", frontend_input="select", backend_type="int",
+        scope="global", options={"32": "7"},
+    )
+    eco = AttributeMeta(
+        id=3, code="eco", frontend_input="boolean", backend_type="int", scope="global", options={},
+    )
+    resolver = _resolver(attributes={"price_view": price_view, "size": size, "eco": eco})
+    rows = [
+        ProductRow(sku="A1", attributes={"price_view": 1, "size": "32", "eco": "Yes"}),
+        ProductRow(sku="A2", attributes={"eco": "no"}),
+        ProductRow(sku="A3", attributes={"eco": "maybe"}),
+    ]
+
+    result = plan_products(rows, resolver, existing=set())
+
+    custom = [op.payload["product"]["custom_attributes"] for op in result.operations]
+    assert custom == [
+        [
+            {"attribute_code": "price_view", "value": 1},
+            # A digit string is still a label: option labels can be numbers.
+            {"attribute_code": "size", "value": "7"},
+            {"attribute_code": "eco", "value": 1},
+        ],
+        [{"attribute_code": "eco", "value": 0}],
+    ]
+    assert [(error.row_ref, error.message) for error in result.failed] == [
+        ("A3", "invalid boolean 'maybe' for attribute 'eco'")
+    ]
+
+
 def test_store_values_emit_minimal_payload_per_store_code():
     """Each store_values entry plans its own PUT with store_code set and
     only the localized keys - never price, websites, categories or the

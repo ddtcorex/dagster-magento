@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Callable, Literal
 
-from dagster_magento.resolvers import ResolveError
+from dagster_magento.resolvers import ResolveError, boolean_value
 from dagster_magento.upload import chunk_rows
 
 # Production hit "URI too large" above 50 SKUs per URL when filtering by
@@ -266,7 +266,12 @@ def _attribute_kind_value(meta, value):
 
 
 def _row_option_ids(code: str, value, meta, resolver):
+    # Mirrors the product writer's value rules (writers/products.py).
+    if meta.frontend_input == "boolean":
+        return boolean_value(code, value)
     if meta.frontend_input == "select":
+        if not isinstance(value, str):
+            return value
         return resolver.option_id(code, value, create=False)
     if meta.frontend_input == "multiselect":
         labels = value.split(",") if isinstance(value, str) else value

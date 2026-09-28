@@ -13,7 +13,7 @@ from typing import Any
 
 from dagster_magento.models import ProductRow
 from dagster_magento.operation import BulkSpec, Operation, RowError
-from dagster_magento.resolvers import ResolveError
+from dagster_magento.resolvers import ResolveError, boolean_value
 from dagster_magento.writers import PlanResult
 from dagster_magento.writers.product_types import apply_type_parts
 
@@ -242,7 +242,14 @@ def _custom_attributes(attributes: dict[str, Any], resolver) -> list[dict[str, A
 
 def _resolve_attribute_value(code: str, value: Any, resolver) -> Any:
     meta = resolver.attribute(code)
+    if meta.frontend_input == "boolean":
+        return boolean_value(code, value)
     if meta.frontend_input == "select":
+        # A non-string value is already an option id (the file adapter
+        # emits bundle flags that way); a string, digits included, is a
+        # label, since option labels can be numbers ("32").
+        if not isinstance(value, str):
+            return value
         return resolver.option_id(code, value)
     if meta.frontend_input == "multiselect":
         return ",".join(resolver.option_id(code, label) for label in _multiselect_labels(value))

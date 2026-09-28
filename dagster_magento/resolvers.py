@@ -29,6 +29,19 @@ def normalize_label(label: str) -> str:
     return html.unescape(label).strip().casefold()
 
 
+_BOOLEAN_LABELS = {"yes": 1, "true": 1, "1": 1, "no": 0, "false": 0, "0": 0}
+
+
+def boolean_value(code: str, value) -> int:
+    """Map a boolean attribute value (Yes/No, true/false, 1/0, any case)
+    to the 1/0 Magento stores. Boolean attributes expose no options, so
+    their labels cannot go through option_id."""
+    key = str(value).strip().casefold()
+    if key not in _BOOLEAN_LABELS:
+        raise ResolveError(f"invalid boolean {value!r} for attribute {code!r}")
+    return _BOOLEAN_LABELS[key]
+
+
 @dataclass(frozen=True)
 class AttributeMeta:
     """Cached metadata for one EAV attribute.

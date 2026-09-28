@@ -370,6 +370,7 @@ class StubResolver:
         self.meta = {
             "color": AttributeMeta(93, "color", "select", "int", "global", {"red": "12", "blue": "13"}),
             "sizes": AttributeMeta(94, "sizes", "multiselect", "varchar", "global", {"s": "1", "m": "2"}),
+            "eco": AttributeMeta(95, "eco", "boolean", "int", "global", {}),
         }
 
     def attribute(self, code):
@@ -461,6 +462,14 @@ def test_product_with_unsnapshotted_parts_never_matches(part):
 def test_product_with_an_unknown_option_label_does_not_match():
     row = product_row(attributes={"color": "Green", "sizes": ["S", "M"]})
     assert not product_matches_snapshot(row, product_snapshot(), StubResolver())
+
+
+def test_product_select_ids_and_boolean_labels_compare_like_the_writer_sends_them():
+    # Same value rules as the product writer: a non-string select value is
+    # an option id, a boolean label maps to 1/0 (Magento reads back "1").
+    row = product_row(attributes={"color": 12, "eco": "Yes"})
+    assert product_matches_snapshot(row, product_snapshot(eco="1"), StubResolver())
+    assert not product_matches_snapshot(row, product_snapshot(eco="0"), StubResolver())
 
 
 def price_snapshot():
