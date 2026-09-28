@@ -127,6 +127,15 @@ cmd_down() {
 }
 
 cmd_reset() {
+  # Default to the version the existing sandbox was built with, so a plain
+  # `reset` (no --version) reproduces the same install; an explicit
+  # --version still overrides this.
+  local existing_version=""
+  if [[ -f "$PROJECT_DIR/.govard.yml" ]]; then
+    existing_version="$(sed -n 's/^framework_version:[[:space:]]*//p' "$PROJECT_DIR/.govard.yml" | head -n1)"
+  fi
+  DEFAULT_VERSION="${existing_version:-$DEFAULT_VERSION}"
+
   parse_version "$@"
   if [[ -d "$PROJECT_DIR" ]]; then
     ( cd "$PROJECT_DIR" && govard down -v )
