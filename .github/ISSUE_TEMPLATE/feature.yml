@@ -1,0 +1,68 @@
+name: Feature Request
+description: Suggest a new feature or improvement to dagster-magento.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please search existing issues and check `AGENTS.md` for the
+        scope boundary: this library targets standard Magento 2 REST endpoints only,
+        so a project-specific companion-module endpoint belongs in the consuming
+        project, not here.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Resource primitives (auth, retry, CRUD)
+        - Search criteria / pagination
+        - Sync uploads
+        - Async bulk
+        - Catalog import (writers, diff, resolvers, models)
+        - File adapters (csv / json / xlsx / xml / ods)
+        - Sandbox, live tests or CI
+        - Documentation / DX
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve, and for which Magento entity?
+    validations:
+      required: true
+
+  - type: textarea
+    id: endpoint
+    attributes:
+      label: Endpoint or behaviour involved
+      description: The standard Magento REST route(s), and whether it is a list endpoint or a bulk-capable one
+      placeholder: "POST /V1/products/base-prices, list body {prices: [...]}"
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe your preferred solution, including example usage if applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried with the existing primitives
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: This is a standard Magento 2 REST endpoint, not a project-specific module
+          required: true
+        - label: I am willing to contribute a PR following Conventional Commits and the TDD workflow
