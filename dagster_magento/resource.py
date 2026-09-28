@@ -35,6 +35,9 @@ class MagentoResource(ConfigurableResource):
     def _url(
         self, endpoint: str, api_prefix: str = "V1", store_code: str | None = None
     ) -> str:
+        # `api_prefix` swaps in the async bulk path ("async/bulk/V1") for
+        # upload_rows_async and submit_bulk without duplicating the auth/retry
+        # machinery below - every other caller keeps the default plain "V1".
         scope = store_code if store_code is not None else self.store_view
         return f"{self.base_url}/rest/{scope}/{api_prefix}/{endpoint}"
 
@@ -206,6 +209,33 @@ class MagentoResource(ConfigurableResource):
 
     def delete(self, endpoint: str, store_code: str | None = None) -> requests.Response:
         return self._request("DELETE", endpoint, store_code=store_code)
+
+    def submit_bulk(
+        self,
+        method: str,
+        bulk_endpoint: str,
+        items: list[dict],
+        store_code: str | None = None,
+    ) -> str:
+        # `method` is the HTTP verb of the sync endpoint being wrapped
+        # (POST to create, PUT for a bySku update, ...) - the async bulk
+        # route accepts the same verb under async/bulk/V1. The body is a
+        # bare JSON array, not {"items": [...]} - verified live against a
+        # 2.4.9 sandbox: a wrapped body is rejected with 400 "Request body
+        # must be an array".
+        response = self._request(
+            method,
+            bulk_endpoint,
+            store_code=store_code,
+            api_prefix="async/bulk/V1",
+            json=items,
+        )
+        return response.json()["bulk_uuid"]
+
+    def bulk_detailed_status(self, bulk_uuid: str) -> dict:
+        """Alias of get_bulk_status, named for the executor's wait_bulk
+        contract (which only needs one status call per poll)."""
+        return self.get_bulk_status(bulk_uuid)
 
     def upload_rows(
         self,

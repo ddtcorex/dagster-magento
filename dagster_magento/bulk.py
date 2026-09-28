@@ -1,7 +1,28 @@
+"""Helpers for Magento's core async/bulk API.
+
+Two halves, deliberately kept out of `resource.py`:
+
+- submitting rows (`AsyncBulkResult`/`run_async_upload`, used by
+  `MagentoResource.upload_rows_async`), where `accepted`/`rejected` only mean
+  "Magento queued the operation", not "it finished";
+- turning a queued bulk back into per-operation outcomes
+  (`map_detailed_status`/`wait_bulk`, used by the executor), which needs only
+  one `bulk_detailed_status` call per poll, so it stays unit-testable against
+  a plain stub the way `upload.py` is kept independent of `resource.py`.
+"""
+
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
 import requests
+
+# Magento\Framework\Bulk\OperationInterface status constants.
+STATUS_COMPLETE = 1
+STATUS_RETRIABLY_FAILED = 2
+STATUS_NOT_RETRIABLY_FAILED = 3
+STATUS_OPEN = 4
+STATUS_REJECTED = 5
 
 
 @dataclass
@@ -85,3 +106,40 @@ def run_async_upload(
     return AsyncBulkResult(
         bulk_uuids=bulk_uuids, accepted=accepted, rejected=rejected, errors=errors
     )
+
+
+def map_detailed_status(response: dict, count: int) -> list[tuple[int | None, str | None]]:
+    """Index a detailed-status response by operation id, not by list order.
+
+    Magento does not guarantee operations_list is sorted by id, so a
+    caller matching the request's index-th item must look up by id."""
+    by_id: dict[int, tuple[int | None, str | None]] = {}
+    for operation in response.get("operations_list", []):
+        operation_id = operation.get("id")
+        if operation_id is None:
+            continue
+        by_id[operation_id] = (operation.get("status"), operation.get("result_message"))
+    return [by_id.get(i, (None, None)) for i in range(count)]
+
+
+def wait_bulk(
+    resource,
+    bulk_uuid: str,
+    count: int,
+    timeout_s: float = 600,
+    poll_interval_s: float = 2.0,
+    clock=time.monotonic,
+    sleep=time.sleep,
+) -> list[tuple[int | None, str | None]]:
+    """Poll detailed-status until no operation is OPEN or missing, or the
+    timeout expires. Never raises on timeout - callers decide what an
+    open/missing status at the deadline means for their own operation."""
+    deadline = clock() + timeout_s
+    while True:
+        response = resource.bulk_detailed_status(bulk_uuid)
+        statuses = map_detailed_status(response, count)
+        if not any(status is None or status == STATUS_OPEN for status, _ in statuses):
+            return statuses
+        if clock() >= deadline:
+            return statuses
+        sleep(poll_interval_s)
