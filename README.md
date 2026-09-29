@@ -469,6 +469,11 @@ price dates round trip.
 - Media is uploaded through the REST media endpoint, one image at a time.
 - Customers, CMS content, URL rewrites, cart and catalog rules are out of
   scope; use `post`/`upload_rows` directly for those.
+- `default_sort_by` is not writable through the Magento 2.4.6 REST API (it
+  types the attribute as `string[]` where 2.4.9 uses `string`, and stores
+  nothing for either shape). Rows rejected over it are retried without the
+  key, with a warning naming them, so the import stays green while the value
+  stays unset on 2.4.6.
 - No hard delete anywhere.
 
 ## License

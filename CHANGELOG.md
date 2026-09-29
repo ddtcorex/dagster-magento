@@ -7,6 +7,15 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Category imports no longer fail on Magento 2.4.6 over `default_sort_by`.
+  2.4.6 types that attribute as `string[]` while 2.4.9 types it as `string`,
+  so no single payload shape works on both - and 2.4.6 stores nothing for
+  either shape, so there is nothing to negotiate. Rows failing with exactly
+  that type error are now re-planned without the key and executed again,
+  with a warning naming them, instead of failing the whole import over one
+  attribute the store cannot persist through REST.
+
+
 - The live bulk test no longer loses operations on the sandbox. Magento
   publishes an async bulk on the broker before it commits the rows that bulk
   belongs to, so a consumer can reach its row while the insert is still
