@@ -13,6 +13,8 @@ from typing import Iterable
 
 import requests
 
+from dagster_magento.bridge import BridgeClient
+
 
 class ResolveError(Exception):
     """Raised when a resolver cannot resolve or create a catalog reference.
@@ -69,9 +71,13 @@ class Resolver:
     # Far deeper than any real catalog tree; the call cost is per node.
     CATEGORY_TREE_DEPTH = 1000
 
-    def __init__(self, resource, root_category: str = "Default Category"):
+    def __init__(self, resource, root_category: str = "Default Category", bridge=None):
         self.resource = resource
         self.root_category = root_category
+        # Optional bridge client: when the store offers the category upsert,
+        # creation happens there, in one transaction, instead of one POST per
+        # missing node from here.
+        self.bridge = bridge
         self._attributes: dict[str, AttributeMeta] = {}
         self._attribute_sets: dict[str, int] = {}
         self._attribute_groups: dict[int, dict[str, int]] = {}
@@ -227,6 +233,15 @@ class Resolver:
         """Resolve every path, creating any missing node parent-first.
         Returns a dict keyed by the paths exactly as given (not normalized),
         mapping each to its Magento category id."""
+        paths = list(paths)
+        if self.bridge is not None and self.bridge.has(BridgeClient.CATEGORIES_UPSERT):
+            resolved = self.bridge.upsert_categories(paths, self.root_category)
+            # Keep the cache the same shape the native path maintains, so a
+            # later category_id() lookup answers without another call.
+            for path, category_id in resolved.items():
+                self._categories[self._normalize_category_path(path)] = category_id
+            return resolved
+
         if not self._categories:
             self._load_category_tree()
         return {path: self._ensure_category_path(path) for path in paths}

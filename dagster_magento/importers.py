@@ -26,7 +26,8 @@ from dagster_magento.diff import (
     snapshot_source_items,
     split_changed,
 )
-from dagster_magento.executor import check_error_ratio, execute
+from dagster_magento.bridge import BridgeClient, BridgeMode
+from dagster_magento.executor import MagentoImportError, check_error_ratio, execute
 from dagster_magento.models import (
     AttributeRow,
     AttributeSetRow,
@@ -62,6 +63,43 @@ _MAX_ATTRIBUTE_SET_PASSES = 3
 
 
 # -- shared helpers -------------------------------------------------------------
+
+
+
+def _bridge(resource, use_bridge: BridgeMode, capabilities: tuple[str, ...]) -> BridgeClient | None:
+    """The bridge client this importer should use, if any.
+
+    `auto` uses whatever the store advertises and falls back per capability,
+    `never` ignores an installed module, and `require` refuses to run when a
+    capability this path needs is missing: that is a configuration error, not
+    something to paper over with a slower path.
+    """
+    if use_bridge == "never":
+        return None
+
+    client = BridgeClient(resource)
+    if use_bridge == "require":
+        missing = sorted(capability for capability in capabilities if not client.has(capability))
+        if missing:
+            raise MagentoImportError(
+                "the bridge is required for this import but the store does not offer: "
+                + ", ".join(missing)
+            )
+
+    return client
+
+
+def _resolver(resource, bridge: BridgeClient | None = None):
+    """A resolver that may create categories through the bridge."""
+    return Resolver(resource, bridge=bridge)
+
+
+def _store_id_for(resolver, resource) -> int:
+    """Numeric store a snapshot compares against, 0 for the whole catalog."""
+    store_view = getattr(resource, "store_view", "all")
+    if not store_view or store_view == "all":
+        return 0
+    return resolver.store_id(store_view)
 
 
 def _validate(model: type[BaseModel], rows: list, id_field: str) -> tuple[list, list[RowError]]:
@@ -174,18 +212,30 @@ def _last_wins(rows: list, key: Callable) -> tuple[list, int]:
 
 
 def import_attributes(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Create or update attributes and their missing options. The writer
     already diffs options against the resolver's cache; `diff` is accepted
     for a uniform signature."""
     valid, invalid = _validate(AttributeRow, rows, "code")
-    plan = plan_attributes(valid, Resolver(resource), behavior=behavior)
+    plan = plan_attributes(valid, _resolver(resource, _bridge(resource, use_bridge, ())), behavior=behavior)
     return _run(resource, [row.code for row in valid], plan, mode, invalid, fail_on_error_ratio)
 
 
 def import_attribute_sets(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Pass-based: a set is created in one pass, its groups in the next and
     the attribute assignments once the groups exist, with the resolver's
@@ -198,7 +248,8 @@ def import_attribute_sets(
     row that still plans a new operation fails with "attribute set not
     converged after 3 passes"."""
     valid, invalid = _validate(AttributeSetRow, rows, "name")
-    resolver = Resolver(resource)
+    bridge = _bridge(resource, use_bridge, ())
+    resolver = _resolver(resource, bridge)
     active = list(valid)
     done: set = set()
     touched: list[str] = []
@@ -255,7 +306,13 @@ def _default_sort_by_rejected(error: dict) -> bool:
 
 
 def import_categories(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Ensure category paths and write their attributes. `diff` is ignored:
     the writer is idempotent by path, and a path it resolves or creates
@@ -266,14 +323,16 @@ def import_categories(
     with a warning naming them: the value is not persistable through that
     store's REST API, and it must not fail the rest of the row."""
     valid, invalid = _validate(CategoryRow, rows, "path")
-    plan = plan_categories(valid, Resolver(resource))
+    plan = plan_categories(
+        valid, _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)))
+    )
     result = _run(
         resource, [row.path for row in valid], plan, mode, invalid, fail_on_error_ratio, noop_succeeded=True
     )
-    return _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio)
+    return _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio, use_bridge)
 
 
-def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio):
+def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio, use_bridge="auto"):
     """Re-plan rows rejected over default_sort_by without the key.
 
     Returns the merged result, or `result` unchanged when no row needs the
@@ -307,7 +366,10 @@ def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_
         )
         for row in (by_path[path] for path in paths)
     ]
-    plan = plan_categories(stripped, Resolver(resource))
+    plan = plan_categories(
+        stripped,
+        _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,))),
+    )
     retry = _run(
         resource,
         [row.path for row in stripped],
@@ -359,7 +421,13 @@ def _product_unchanged(row: ProductRow, snap: dict, resolver, behavior: str) -> 
 
 
 def import_products(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Snapshot existing SKUs, skip rows `product_matches_snapshot` proves
     unchanged (diff=True), plan, then execute the main and store-value
@@ -367,9 +435,18 @@ def import_products(
     child must exist before it is linked. Images are out of scope here:
     import_media owns them."""
     valid, invalid = _validate(ProductRow, rows, "sku")
-    resolver = Resolver(resource)
+    bridge = _bridge(
+        resource, use_bridge, (BridgeClient.PRODUCT_INDEX, BridgeClient.ATTRIBUTE_VALUES)
+    )
+    resolver = _resolver(resource, bridge)
     skus = list(dict.fromkeys(row.sku for row in valid))
-    snapshot = snapshot_products(resource, skus, PRODUCT_SNAPSHOT_FIELDS)
+    snapshot = snapshot_products(
+        resource,
+        skus,
+        PRODUCT_SNAPSHOT_FIELDS,
+        bridge=bridge,
+        store_id=_store_id_for(resolver, resource),
+    )
 
     changed, skipped = valid, 0
     if diff and snapshot:
@@ -446,7 +523,13 @@ def _merge_prices(rows: list[PriceRow]) -> tuple[list[PriceRow], int]:
 
 
 def import_prices(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Base, special and tier prices through the price-storage list
     endpoints. Always sync: those endpoints take lists and have no bulk
@@ -477,7 +560,13 @@ def import_prices(
 
 
 def import_sources(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Create or overwrite MSI sources. `diff` is ignored (no snapshot)."""
     valid, invalid = _validate(SourceRow, rows, "source_code")
@@ -486,11 +575,17 @@ def import_sources(
 
 
 def import_stocks(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Create MSI stocks bound to website sales channels. `diff` is ignored."""
     valid, invalid = _validate(StockRow, rows, "name")
-    plan = plan_stocks(valid, Resolver(resource))
+    plan = plan_stocks(valid, _resolver(resource, _bridge(resource, use_bridge, ())))
     return _run(resource, [row.name for row in valid], plan, mode, invalid, fail_on_error_ratio)
 
 
@@ -502,6 +597,7 @@ def import_stock_source_links(
     diff=True,
     behavior="upsert",
     fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Link sources to stocks. `stock_ids` (name -> id) is read from
     GET inventory/stocks when not given. `diff` is ignored."""
@@ -515,7 +611,13 @@ def import_stock_source_links(
 
 
 def import_source_items(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Write source item quantity and status, skipping pairs whose current
     (quantity, status) already match. The last row per pair wins."""
@@ -542,7 +644,13 @@ def import_source_items(
 
 
 def import_media(
-    resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
+    resource,
+    rows,
+    mode: Mode = "sync",
+    diff=True,
+    behavior="upsert",
+    fail_on_error_ratio=None,
+    use_bridge: BridgeMode = "auto",
 ):
     """Upload product images. The gallery snapshot is always read (the
     writer needs it for image identity), so `diff` only documents that a

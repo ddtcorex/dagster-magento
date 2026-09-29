@@ -2,17 +2,21 @@
 desired rows, so a writer never sends an update for a value that is
 already correct.
 
-Bridge-absent path only (see spec 5.4): every snapshot here is built from
-plain native Magento REST endpoints (`GET /V1/products`,
-`*-price-information`, `GET /V1/inventory/source-items`, `GET
-/V1/products/{sku}/media`) - no companion module, no B1/B2/B3 bridge call.
-These functions only ever read; they never write to Magento.
+Every snapshot defaults to plain native Magento REST endpoints
+(`GET /V1/products`, `*-price-information`, `GET
+/V1/inventory/source-items`, `GET /V1/products/{sku}/media`). The product
+snapshot also accepts an optional bridge client and then reads the index and
+the store-scoped attribute values instead, per capability. These functions
+only ever read; they never write to Magento.
 """
 
+import logging
 import re
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Callable, Literal
+
+import requests
 
 from dagster_magento.resolvers import ResolveError, boolean_value
 from dagster_magento.upload import chunk_rows
@@ -21,6 +25,8 @@ from dagster_magento.upload import chunk_rows
 # `sku in (...)` - see spec 5.4. Price-information endpoints take the SKU
 # list in the POST body instead, so they are not bound by this limit and
 # use the larger 1000-row chunk size shared with upload_rows.
+logger = logging.getLogger(__name__)
+
 _URL_FILTER_CHUNK_SIZE = 50
 _PRICE_CHUNK_SIZE = 1000
 _SOURCE_ITEMS_PAGE_SIZE = 200
@@ -105,13 +111,30 @@ def _sku_filter_chunks(skus: list[str], size: int):
         yield "in", ",".join(chunk), chunk
 
 
-def snapshot_products(resource, skus: list[str], fields: list[str]) -> dict[str, dict]:
-    """Fetch the current state of `skus` from `GET /V1/products`, projected
-    to `fields` plus flattened `custom_attributes`.
+def snapshot_products(
+    resource, skus: list[str], fields: list[str], bridge=None, store_id: int = 0
+) -> dict[str, dict]:
+    """Fetch the current state of `skus`, keyed by SKU.
 
-    Returns a dict keyed by SKU. A SKU Magento does not know about is
-    simply absent from the result - the caller reads that as "new row".
+    `GET /V1/products` is the default source. With a bridge client whose store
+    advertises the product index, the index answers the entity fields and the
+    attribute endpoint answers the rest, per store, and Magento's own fallback
+    applies: the store value wins when the store has one, otherwise the
+    default store value is used. Either way a SKU Magento does not know about
+    is absent from the result, and the caller reads that as "new row".
     """
+    if bridge is not None and bridge.has(bridge.PRODUCT_INDEX):
+        try:
+            return _products_from_bridge(bridge, skus, fields, store_id)
+        except requests.exceptions.HTTPError as error:
+            logger.warning(f"bridge snapshot failed ({error}); using the REST snapshot")
+
+    return _products_from_rest(resource, skus, fields)
+
+
+def _products_from_rest(resource, skus: list[str], fields: list[str]) -> dict[str, dict]:
+    """`GET /V1/products`, projected to `fields` and flattened
+    `custom_attributes`."""
     result: dict[str, dict] = {}
     field_list = ",".join(["sku", *fields, "custom_attributes"])
 
@@ -131,6 +154,30 @@ def snapshot_products(resource, skus: list[str], fields: list[str]) -> dict[str,
             for attribute in item.get("custom_attributes") or []:
                 flat[attribute["attribute_code"]] = attribute["value"]
             result[item["sku"]] = flat
+
+    return result
+
+
+def _products_from_bridge(bridge, skus: list[str], fields: list[str], store_id: int) -> dict[str, dict]:
+    """The index for the entity fields and the attribute endpoint for the rest.
+
+    Only SKUs the index knows are returned, which is what makes this the same
+    answer as the REST snapshot: a product Magento does not have cannot be
+    reported as existing.
+    """
+    index = bridge.index_by_sku()
+    present = [sku for sku in skus if sku in index]
+    result: dict[str, dict] = {
+        sku: {field: index[sku].get(field) for field in fields} for sku in present
+    }
+
+    codes = [field for field in fields if field not in bridge.ENTITY_FIELDS]
+    if codes and present:
+        for sku, per_code in bridge.attribute_values(present, codes, store_id=store_id).items():
+            for code, (store_value, default_value) in per_code.items():
+                if store_value is None and default_value is None:
+                    continue
+                result[sku][code] = store_value if store_value is not None else default_value
 
     return result
 
