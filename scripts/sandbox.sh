@@ -158,6 +158,19 @@ use_supported_search_backend() {
   docker rm -f "${project}-elasticsearch-1" >/dev/null 2>&1 || true
   docker volume rm "${project}_search-data" >/dev/null 2>&1 || true
   ( cd "$PROJECT_DIR" && govard up )
+  # A fresh Elasticsearch needs up to a couple of minutes for first boot
+  # (JVM + cluster formation); setup:upgrade validates the connection and
+  # fails with "No alive nodes" if it runs too early, so wait for it here.
+  log "waiting for Elasticsearch to answer"
+  local attempt
+  for attempt in $(seq 1 36); do
+    if ( cd "$PROJECT_DIR" && govard elasticsearch / >/dev/null 2>&1 ); then
+      log "Elasticsearch is up"
+      return 0
+    fi
+    sleep 5
+  done
+  die "Elasticsearch did not answer within 3 minutes"
 }
 
 cmd_up() {
