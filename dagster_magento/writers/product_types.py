@@ -74,9 +74,13 @@ def _configurable_option_operation(row: ProductRow, resolver, code: str, positio
         endpoint=f"configurable-products/{_quote_sku(sku)}/options",
         payload={"option": option},
         row_refs=(sku,),
+        # Phase 1: the option acts on the configurable product, which must
+        # have been saved already. In bulk mode consumers run concurrently, so
+        # a same-phase option reaches a product that does not exist yet.
         bulk=BulkSpec(
             "configurable-products/bySku/options",
             {"sku": sku, "option": copy.deepcopy(option)},
+            phase=1,
         ),
     )
 
@@ -98,9 +102,13 @@ def _configurable_child_operation(row: ProductRow, variation) -> Operation:
         endpoint=f"configurable-products/{_quote_sku(sku)}/child",
         payload=payload,
         row_refs=(sku,),
+        # Phase 1: a link needs both the configurable parent and the child
+        # saved, and concurrent consumers must not reach either before its
+        # save has finished.
         bulk=BulkSpec(
             "configurable-products/bySku/child",
             {"sku": sku, "childSku": variation.sku},
+            phase=1,
         ),
     )
 

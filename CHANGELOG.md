@@ -21,8 +21,10 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
   validates the referenced SKUs while saving the parent; submitting every
   save of one bulk together lets concurrent consumers run the parent first
   and fail it with 'The Product with ... doesn't exist' (seen live on 2.4.6,
-  timing hid it on 2.4.9). Those mains now plan into a later bulk phase that
-  the executor submits only after every earlier phase has completed.
+  timing hid it on 2.4.9). Configurable option and child-link operations need
+  the same ordering and failed with "The product can't be saved.". All of
+  them now plan into a later bulk phase that the executor submits only after
+  every earlier phase has completed.
 
 - The live bulk test no longer loses operations on the sandbox. Magento
   publishes an async bulk on the broker before it commits the rows that bulk
