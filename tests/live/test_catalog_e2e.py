@@ -166,14 +166,22 @@ IMPORTERS = {
 }
 
 
-def run_catalog(resource, catalog: dict[str, list], mode: str) -> dict[str, tuple]:
-    """Run every importer in dependency order; returns name -> (result, seconds)."""
+def run_catalog(
+    resource, catalog: dict[str, list], mode: str, use_bridge: str = "auto"
+) -> dict[str, tuple]:
+    """Run every importer in dependency order; returns name -> (result, seconds).
+
+    `use_bridge` is passed to every importer: "never" proves the native paths
+    against an installed module, "require" fails fast unless the bridge offers
+    every capability the path needs, and the default "auto" uses what the store
+    advertises.
+    """
     results = {}
     for name, importer in IMPORTERS.items():
         started = time.monotonic()
-        result = importer(resource, catalog[name], mode=mode)
+        result = importer(resource, catalog[name], mode=mode, use_bridge=use_bridge)
         results[name] = (result, time.monotonic() - started)
-        print(f"[{mode}] {name}: {result.to_metadata()} in {results[name][1]:.1f}s")
+        print(f"[{mode}/{use_bridge}] {name}: {result.to_metadata()} in {results[name][1]:.1f}s")
     return results
 
 
@@ -234,13 +242,14 @@ def catalog():
     return load_catalog()
 
 
-def test_full_sample_catalog_imports_in_sync_mode(catalog):
+@pytest.mark.parametrize("use_bridge", ["never", "require"])
+def test_full_sample_catalog_imports_in_sync_mode(catalog, use_bridge):
     prepare_sandbox()
     resource = make_resource()
 
     started = time.monotonic()
-    results = run_catalog(resource, catalog, "sync")
-    print(f"[sync] total {time.monotonic() - started:.1f}s")
+    results = run_catalog(resource, catalog, "sync", use_bridge=use_bridge)
+    print(f"[sync/{use_bridge}] total {time.monotonic() - started:.1f}s")
 
     assert_catalog_imported(resource, catalog, results)
 
@@ -271,8 +280,9 @@ def product_is_diffable(row: ProductRow) -> bool:
     return not any(getattr(row, part) for part in parts)
 
 
+@pytest.mark.parametrize("use_bridge", ["never", "require"])
 @pytest.mark.skipif(not SANDBOX_PROJECT.is_dir(), reason="bulk run resets the local sandbox")
-def test_same_catalog_imports_in_bulk_mode(catalog):
+def test_same_catalog_imports_in_bulk_mode(catalog, use_bridge):
     """Same catalog, bulk submission path, after a sandbox reset.
 
     Magento publishes the messages of an async bulk before it commits the
@@ -311,7 +321,7 @@ def test_same_catalog_imports_in_bulk_mode(catalog):
     resource = make_resource()
 
     started = time.monotonic()
-    results = run_catalog(resource, catalog, "bulk")
-    print(f"[bulk] total {time.monotonic() - started:.1f}s")
+    results = run_catalog(resource, catalog, "bulk", use_bridge=use_bridge)
+    print(f"[bulk/{use_bridge}] total {time.monotonic() - started:.1f}s")
 
     assert_catalog_imported(resource, catalog, results)

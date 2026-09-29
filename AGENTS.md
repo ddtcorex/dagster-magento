@@ -76,6 +76,12 @@ or orchestration that `resource.py` and `importers.py` delegate to.
   `run_async_upload()` (submission, where `accepted` means "Magento queued
   it", not "it finished") and `map_detailed_status()`/`wait_bulk()` (polling
   and per-operation id mapping).
+- `bridge.py`: `BridgeClient`, the client for the optional companion module
+  `DDTCoreX_DagsterBridge` (its own public repo). One capability probe per run
+  (`GET dagster-bridge/capabilities`, cached), product index paging on
+  `next_after`, attribute values chunked to the module's 1000 SKU and 50 code
+  caps, category upsert, and a separator chosen to appear in none of the paths
+  it is given. See "Optional bridge module" below for the rules.
 
 ### Catalog import layer (v0.2.0): models -> resolvers -> diff -> writers -> executor
 
@@ -83,9 +89,15 @@ or orchestration that `resource.py` and `importers.py` delegate to.
   a `RowError`, never an exception.
 - `resolvers.py`: `Resolver`: one `GET products/attributes` preload, option
   label matching, attribute set / website / store / category path lookup,
-  parent-first category creation.
+  parent-first category creation. With a bridge client that advertises
+  `categories.upsert`, the module creates the missing nodes in one transaction
+  instead, and the resolver cache is updated the same way.
 - `diff.py`: snapshots products, prices, source items and media; skips rows
-  that already match, which is what `skipped_unchanged` reports.
+  that already match, which is what `skipped_unchanged` reports. The product
+  snapshot takes an optional bridge client and store id, reads the index for the
+  entity fields and the attribute endpoint for the rest, and applies Magento's
+  store fallback (store value first, default store value otherwise), so a store
+  without its own value never reads as a difference.
 - `operation.py`: `Operation`, `BulkSpec`, `RowError`.
 - `writers/`: pure planners, one module per entity: rows in, `Operation`
   values out, no HTTP.
@@ -99,6 +111,23 @@ or orchestration that `resource.py` and `importers.py` delegate to.
 - `formats/`: csv/json/xlsx readers (`readers.py`, openpyxl behind the
   `xlsx` extra) and the native column mappers (`columns.py` pure string
   parsing, `catalog.py` onto models).
+
+## Optional bridge module
+
+`dagster_magento/bridge.py` talks to `DDTCoreX_DagsterBridge`, an optional
+companion module that lives in its own public repo. The library must keep
+working without it, so:
+
+- every importer takes `use_bridge` (`auto`, `never`, `require`); `require`
+  raises `MagentoImportError` naming the missing capability rather than quietly
+  running a slower path;
+- each capability is used on its own, so a store with an older module gets the
+  capabilities it has and the native paths for the rest;
+- the probe is best effort: a 404 or a probe that cannot answer at all leaves
+  the native paths in charge, because an optional module must never be able to
+  fail an import;
+- `MagentoAuthError` is re-raised and never swallowed by that fallback, exactly
+  as it is not caught anywhere else in this library.
 
 ## Non-negotiable: secrets never leak
 
@@ -150,10 +179,21 @@ consecutive-failure circuit breaker if it ever bites a real consumer.
   Magento: a test that needs one to pass is a design mistake.
 - `samples` downloads the public sample import files at a pinned commit into
   `tests/.samples/` (gitignored, never vendored).
+- `tests/test_bridge.py` pins the optional module hermetically: the 404 probe,
+  the capability cache, `next_after` paging, 1000 SKU chunking, the store
+  fallback, per-capability fallback, the separator choice, and the auth failure
+  that must not be swallowed by the best-effort probe.
 - `live` drives the govard sandbox from `scripts/sandbox.sh` and needs
-  `MAGENTO_BASE_URL` plus `MAGENTO_CA_BUNDLE` for the local development CA.
+  `MAGENTO_BASE_URL` plus `MAGENTO_CA_BUNDLE` for the local development CA. A
+  plain script has no conftest to build that bundle: cat certifi plus the local
+  CA into one file and point `REQUESTS_CA_BUNDLE` at it.
   A live test that resets the sandbox rotates the admin password, which is
   why `tests/live/live_support.py` reloads the environment.
+- The live e2e suite runs the catalog import as a matrix over `use_bridge`
+  (`never`, `require`) in `sync` and `bulk` mode. The sandbox keeps its bridge
+  checkout across `scripts/sandbox.sh reset` and re-enables the module, which is
+  what makes the `require` combinations real assertions that the module is
+  installed and answering.
 - When pinning Dagster behaviour (`get_dagster_logger()` output,
   `AssetExecutionContext`), verify the installed version's API instead of
   assuming: it changed during this package's own development

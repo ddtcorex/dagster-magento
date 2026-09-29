@@ -460,6 +460,70 @@ then checks that a price write reaches a full page cached storefront after
 cron, that a bulk store-view update keeps its store scope, and that special
 price dates round trip.
 
+## Optional bridge module
+
+The catalog import layer works against Magento's own REST API and needs no
+module installed. A companion module, `DDTCoreX_DagsterBridge`, can make the
+read-heavy parts cheaper and the category upsert atomic. When it is present the
+library uses it capability by capability; when it is absent the native paths run
+unchanged.
+
+| Capability | Endpoint | What it replaces |
+| --- | --- | --- |
+| `products.index` | `GET /V1/dagster-bridge/products/index` | the paginated `GET /V1/products` scan that decides which SKUs exist |
+| `products.attribute_values` | `POST /V1/dagster-bridge/products/attribute-values` | one `GET /V1/products` per SKU chunk, and the store fallback done by hand |
+| `categories.upsert` | `POST /V1/dagster-bridge/categories/upsert` | one `POST /V1/categories` per missing node |
+
+`BridgeClient` probes `GET /V1/dagster-bridge/capabilities` once per run and
+caches the answer. A store without the module answers 404, and the probe is best
+effort, so an optional module can never fail an import; a credential problem
+still aborts the run.
+
+Every importer takes `use_bridge`:
+
+- `"auto"` (the default) uses every capability the store advertises and falls
+  back for the rest, per path.
+- `"never"` ignores an installed module, which is how the native paths stay
+  proven.
+- `"require"` raises `MagentoImportError` naming the missing capability instead
+  of quietly running a slower path.
+
+The module answers the store value and the default store value separately, and
+the library applies Magento's own fallback (store value first, the default store
+value otherwise), so a store that has no value of its own never reads as a
+difference.
+
+### Price write benchmark
+
+`scripts/bench_prices.py --rows 10000` times the two ways to write the same base
+prices over 10,000 products: price-only payloads through the async bulk route
+`PUT async/bulk/V1/products/bySku`, and the native price storage list endpoint
+through `import_prices`. Both paths write real changes on every run.
+
+Measured on the sandbox this repository's live tests use: Magento 2.4.9, PHP
+8.5, MariaDB 11.8, 12 cores and 30.5 GiB RAM on the host, four
+`async.operations.all` consumers, 10,000 base prices over a seeded catalog,
+three runs. The number is the wall clock of the whole write, consumer time
+included.
+
+| Run | Path A: async bulk `products/bySku` | Path B: `import_prices` (price storage) | Ratio |
+| --- | --- | --- | --- |
+| 1 | 507.3 s (19.7 rows/s) | 15.2 s (657.9 rows/s) | 33x |
+| 2 | 587.6 s (17.0 rows/s) | 7.9 s (1261.4 rows/s) | 74x |
+| 3 | 228.6 s (43.7 rows/s) | 7.8 s (1276.4 rows/s) | 29x |
+| **median** | **507.3 s** | **7.9 s** | **64x** |
+
+The design record's criterion 3 asks the price-storage path for at least a 10x
+wall-clock reduction against a bulk full-product save, consumer time included.
+Every run is above that. Path A submits price-only payloads to
+`PUT async/bulk/V1/products/bySku`, so each of the 10,000 writes is a full
+product save executed by a consumer and the wall clock follows consumer
+throughput, which is why it moves between 229 s and 588 s; path B sends the same
+prices to Magento's price storage list endpoint in 1000-row calls. Both paths
+wrote real changes on every run (path A without a diff, path B with `diff=False`)
+and both were read back through REST afterwards, and path A reported 10,000 of
+10,000 operations complete every time, with no operation left open.
+
 ## Native-only limits
 
 - Swatch attributes (visual, text, image) are not created; only the
