@@ -468,3 +468,117 @@ def test_disable_skips_already_disabled_product():
 
     assert result == UploadResult(succeeded=0, failed=0, skipped_unchanged=1)
     assert writes(m) == []
+
+
+TYPE_ERROR_400 = {
+    "message": (
+        'Error occurred during "custom_attributes" processing. '
+        'Attribute "default_sort_by" has invalid value. '
+        'The "string" value\'s type is invalid. '
+        'The "string[]" type was expected. Verify and try again.'
+    )
+}
+
+
+def _mock_category_tree(m):
+    m.post(f"{BASE}/integration/admin/token", json="token")
+    m.get(
+        f"{BASE}/categories",
+        json={
+            "id": 1,
+            "name": "Root Catalog",
+            "children_data": [
+                {"id": 2, "name": "Default Category", "children_data": [{"id": 5, "name": "Men"}]}
+            ],
+        },
+    )
+
+
+def _put_bodies(m, sku_or_id):
+    return [
+        request.json()
+        for request in m.request_history
+        if request.method == "PUT" and request.url.endswith(f"/categories/{sku_or_id}")
+    ]
+
+
+def test_categories_retry_without_default_sort_by_on_246_type_error():
+    """Magento 2.4.6 types default_sort_by as string[] (2.4.9: string), so
+    the plain string is rejected there with 400 - and 2.4.6 stores nothing
+    for the array shape either, so there is no shape to negotiate: rows
+    failing with exactly that error are re-planned without the key and run
+    again, instead of failing the whole import over one unwritable
+    attribute."""
+    from dagster_magento.importers import import_categories
+    from dagster_magento.models import CategoryRow
+
+    row = CategoryRow(
+        path="Default Category/Men",
+        attributes={"default_sort_by": "position", "description": "Men"},
+    )
+    with requests_mock.Mocker() as m:
+        _mock_category_tree(m)
+        m.put(
+            f"{BASE}/categories/5",
+            [{"status_code": 400, "json": TYPE_ERROR_400}, {"status_code": 200, "json": {"id": 5}}],
+        )
+
+        result = import_categories(make_resource(), [row])
+
+    assert result.failed == 0
+    assert result.succeeded == 1
+    bodies = _put_bodies(m, 5)
+    assert len(bodies) == 2
+    assert bodies[0]["category"]["custom_attributes"] == [
+        {"attribute_code": "default_sort_by", "value": "position"},
+        {"attribute_code": "description", "value": "Men"},
+    ]
+    assert bodies[1]["category"]["custom_attributes"] == [
+        {"attribute_code": "description", "value": "Men"}
+    ]
+
+
+def test_categories_do_not_retry_other_400s():
+    """A 400 that is not the default_sort_by type error fails the row
+    loudly: the retry must not mask real problems."""
+    from dagster_magento.importers import import_categories
+    from dagster_magento.models import CategoryRow
+
+    row = CategoryRow(
+        path="Default Category/Men",
+        attributes={"default_sort_by": "position", "description": "Men"},
+    )
+    with requests_mock.Mocker() as m:
+        _mock_category_tree(m)
+        m.put(f"{BASE}/categories/5", status_code=400, json={"message": "Something else broke"})
+
+        result = import_categories(make_resource(), [row])
+
+    assert result.failed == 1
+    assert len(_put_bodies(m, 5)) == 1
+
+
+def test_categories_retry_reports_failure_when_it_still_fails():
+    """The retry runs once: if the row still fails without the key, it
+    stays failed instead of looping."""
+    from dagster_magento.importers import import_categories
+    from dagster_magento.models import CategoryRow
+
+    row = CategoryRow(
+        path="Default Category/Men",
+        attributes={"default_sort_by": "position", "description": "Men"},
+    )
+    with requests_mock.Mocker() as m:
+        _mock_category_tree(m)
+        m.put(
+            f"{BASE}/categories/5",
+            [
+                {"status_code": 400, "json": TYPE_ERROR_400},
+                {"status_code": 400, "json": {"message": "Something else broke"}},
+            ],
+        )
+
+        result = import_categories(make_resource(), [row])
+
+    assert result.failed == 1
+    assert len(_put_bodies(m, 5)) == 2

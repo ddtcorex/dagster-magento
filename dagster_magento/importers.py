@@ -231,16 +231,120 @@ def import_attribute_sets(
     return _check_ratio(folded, fail_on_error_ratio)
 
 
+# Magento 2.4.6 types the `default_sort_by` category attribute as string[]
+# while 2.4.9 types it as string, so no single payload shape works on both:
+# the plain string the sample files carry is rejected on 2.4.6 with 400, and
+# 2.4.6 stores nothing for the array shape either (verified live: accepted
+# with 200 but no row written and nothing to read back). There is nothing to
+# negotiate, so rows failing with exactly that type error are re-planned
+# without the key and executed again instead of failing the whole import over
+# one attribute the store cannot persist through REST.
+# Quote-agnostic: the executor embeds the raw JSON response body, so the
+# quotes arrive backslash-escaped.
+_DEFAULT_SORT_BY_TYPE_ERROR = ("string[]", "default_sort_by")
+
+
+def _default_sort_by_rejected(error: dict) -> bool:
+    """Whether one executor error is a store refusing the default_sort_by
+    string. The match requires the attribute code, so an unrelated type
+    error still fails its row loudly."""
+    if error.get("status") != "failed" or error.get("status_code") != 400:
+        return False
+    message = error.get("message") or ""
+    return all(part in message for part in _DEFAULT_SORT_BY_TYPE_ERROR)
+
+
 def import_categories(
     resource, rows, mode: Mode = "sync", diff=True, behavior="upsert", fail_on_error_ratio=None
 ):
     """Ensure category paths and write their attributes. `diff` is ignored:
     the writer is idempotent by path, and a path it resolves or creates
-    during planning counts as succeeded even with no attribute to write."""
+    during planning counts as succeeded even with no attribute to write.
+
+    Rows a store rejects over the `default_sort_by` string shape (Magento
+    2.4.6, which types it as string[]) are retried once without that key,
+    with a warning naming them: the value is not persistable through that
+    store's REST API, and it must not fail the rest of the row."""
     valid, invalid = _validate(CategoryRow, rows, "path")
     plan = plan_categories(valid, Resolver(resource))
-    return _run(
+    result = _run(
         resource, [row.path for row in valid], plan, mode, invalid, fail_on_error_ratio, noop_succeeded=True
+    )
+    return _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio)
+
+
+def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio):
+    """Re-plan rows rejected over default_sort_by without the key.
+
+    Returns the merged result, or `result` unchanged when no row needs the
+    retry. The retry runs once: without the key the type error cannot recur,
+    so a row that still fails stays failed instead of looping."""
+    by_path = {row.path: row for row in valid}
+    paths = sorted(
+        {
+            ref
+            for error in result.errors
+            if _default_sort_by_rejected(error)
+            for ref in error.get("row_ids") or ()
+            if ref in by_path and "default_sort_by" in by_path[ref].attributes
+        }
+    )
+    if not paths:
+        return result
+
+    get_dagster_logger().warning(
+        "default_sort_by is not writable through this store's REST API "
+        "(Magento 2.4.6 types it as string[] and stores nothing for it); "
+        f"retrying {len(paths)} row(s) without it: {', '.join(paths)}"
+    )
+    stripped = [
+        row.model_copy(
+            update={
+                "attributes": {
+                    key: value for key, value in row.attributes.items() if key != "default_sort_by"
+                }
+            }
+        )
+        for row in (by_path[path] for path in paths)
+    ]
+    plan = plan_categories(stripped, Resolver(resource))
+    retry = _run(
+        resource,
+        [row.path for row in stripped],
+        plan,
+        mode,
+        [],
+        fail_on_error_ratio,
+        noop_succeeded=True,
+    )
+    return _merge_retry(result, retry, paths)
+
+
+def _merge_retry(result: UploadResult, retry: UploadResult, paths: list[str]) -> UploadResult:
+    """Fold a retry back into the first result: the retried rows' original
+    failures are replaced by the retry's outcome for exactly those rows."""
+    retried = set(paths)
+    dropped = {
+        ref
+        for error in result.errors
+        if error.get("status") == "failed"
+        for ref in (error.get("row_ids") or ())
+        if ref in retried
+    }
+    errors = [
+        error
+        for error in result.errors
+        if not (
+            error.get("status") == "failed"
+            and set(error.get("row_ids") or ()) <= retried
+        )
+    ] + retry.errors
+    return UploadResult(
+        succeeded=result.succeeded + retry.succeeded,
+        failed=result.failed - len(dropped) + retry.failed,
+        pending=result.pending + retry.pending,
+        skipped_unchanged=result.skipped_unchanged + retry.skipped_unchanged,
+        errors=errors,
     )
 
 
