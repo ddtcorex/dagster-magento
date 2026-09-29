@@ -90,11 +90,19 @@ def prepare_sandbox() -> None:
     - bulk mode needs async.operations.all consumers running. A consumer
       caches the store list when it starts and answers "The store that was
       requested wasn't found" for a store created later, so consumers are
-      restarted when this call had to create the store view."""
+      restarted when this call had to create the store view;
+    - the search indices must exist before the first product save. Every
+      product save runs the stock→MSI→fulltext chain inline, and concurrent
+      first saves race index creation against each other: the losers get a
+      400 resource_already_exists_exception that rolls the whole save back
+      ("The stock item was unable to be saved", seen live on 2.4.6). A
+      serial fulltext reindex up front creates the indices once, so the
+      saves that follow only write documents."""
     magento_cli("downloadable:domains:add", "firebearstudio.com")
     magento_cli("config:set", "catalog/price/scope", "1")
     created = ensure_store_view("fr", "French")
     magento_cli("cache:flush")
+    magento_cli("indexer:reindex", "catalogsearch_fulltext")
     running = consumer_count()
     if created and running:
         stop_consumers()
