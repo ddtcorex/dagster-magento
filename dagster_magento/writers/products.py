@@ -112,7 +112,7 @@ def _plan_row(row: ProductRow, resolver, is_existing: bool) -> list[Operation]:
     # main operation copies `body` into its own payload/bulk dicts - a
     # copy taken first would carry none of the type-specific fields.
     type_part_operations = apply_type_parts(row, body, resolver)
-    operations = [_main_operation(row.sku, body, is_existing)]
+    operations = [_main_operation(row, body, is_existing)]
     operations.extend(type_part_operations)
     operations.extend(_store_value_operations(row, resolver))
     return operations
@@ -162,6 +162,7 @@ def _product_operation(
     bulk_endpoint: str,
     bulk_includes_sku: bool,
     store_code: str | None = None,
+    bulk_phase: int = 0,
 ) -> Operation:
     """Build one Operation plus its paired BulkSpec from a single `body`
     dict, without either side ever sharing a dict object with the other -
@@ -177,14 +178,36 @@ def _product_operation(
         payload=payload,
         row_refs=(sku,),
         store_code=store_code,
-        bulk=BulkSpec(bulk_endpoint, bulk_payload),
+        bulk=BulkSpec(bulk_endpoint, bulk_payload, phase=bulk_phase),
     )
 
 
-def _main_operation(sku: str, body: dict[str, Any], is_existing: bool) -> Operation:
+def _save_phase(row) -> int:
+    """Bulk submission phase of one row's own saves.
+
+    A grouped parent carries its links inline (`product_links`), and a bundle
+    parent its selections (`bundle_product_options`): Magento validates the
+    referenced SKUs while saving the parent, so in bulk mode - where every
+    save of the bulk is submitted together and consumers process them
+    concurrently - the parent must wait for a phase of its own, after every
+    other save has completed. Without this the parent fails with 'The Product
+    with ... doesn't exist' whenever its operation runs first (seen live on
+    2.4.6; timing hid it on 2.4.9).
+    """
+    if row.type == "grouped" and row.grouped_links:
+        return 1
+    if row.type == "bundle" and any(option.selections for option in row.bundle_options):
+        return 1
+    return 0
+
+
+def _main_operation(row, body: dict[str, Any], is_existing: bool) -> Operation:
+    sku = row.sku
+    phase = _save_phase(row)
     if not is_existing:
         return _product_operation(
-            "POST", "products", sku, body, bulk_endpoint="products", bulk_includes_sku=False
+            "POST", "products", sku, body, bulk_endpoint="products", bulk_includes_sku=False,
+            bulk_phase=phase,
         )
     return _product_operation(
         "PUT",
@@ -193,6 +216,7 @@ def _main_operation(sku: str, body: dict[str, Any], is_existing: bool) -> Operat
         body,
         bulk_endpoint="products/bySku",
         bulk_includes_sku=True,
+        bulk_phase=phase,
     )
 
 
@@ -209,6 +233,9 @@ def _disable_operation(sku: str) -> Operation:
 
 
 def _store_value_operations(row: ProductRow, resolver) -> list[Operation]:
+    # A store-scoped update to a composite parent waits with its main save:
+    # it needs the product to exist just the same.
+    phase = _save_phase(row)
     operations = []
     for store_code, localized in row.store_values.items():
         body: dict[str, Any] = {"sku": row.sku}
@@ -228,6 +255,7 @@ def _store_value_operations(row: ProductRow, resolver) -> list[Operation]:
                 bulk_endpoint="products/bySku",
                 bulk_includes_sku=True,
                 store_code=store_code,
+                bulk_phase=phase,
             )
         )
     return operations

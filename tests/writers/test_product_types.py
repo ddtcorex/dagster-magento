@@ -12,6 +12,7 @@ from dagster_magento.models import (
 from dagster_magento.operation import BulkSpec
 from dagster_magento.resolvers import AttributeMeta
 from dagster_magento.writers.product_types import apply_type_parts
+from dagster_magento.writers.products import plan_products
 
 
 def _resolver(**overrides):
@@ -61,9 +62,12 @@ def test_configurable_emits_options_then_children():
             "values": [{"value_index": 10}, {"value_index": 11}],
         }
     }
+    # Phase 1: both act on the configurable product itself, so their own
+    # save has to have completed first.
     assert options_op.bulk == BulkSpec(
         "configurable-products/bySku/options",
         {"sku": "CFG1", "option": options_op.payload["option"]},
+        phase=1,
     )
 
     child_ops = operations[1:]
@@ -75,7 +79,7 @@ def test_configurable_emits_options_then_children():
         assert op.method == "POST"
         assert op.row_refs == ("CFG1",)
     assert child_ops[0].bulk == BulkSpec(
-        "configurable-products/bySku/child", {"sku": "CFG1", "childSku": "CFG1-RED"}
+        "configurable-products/bySku/child", {"sku": "CFG1", "childSku": "CFG1-RED"}, phase=1
     )
 
 
@@ -320,3 +324,36 @@ def test_simple_and_virtual_are_no_ops():
 
         assert operations == []
         assert product == {"sku": "S1"}
+
+
+def test_configurable_option_and_child_operations_wait_for_their_parents_saves():
+    """A configurable option and child link act on the parent product, and a
+    child link acts on the child too, so both need those saves to have
+    completed. In bulk mode consumers run concurrently: without a later phase
+    the link can reach a product that does not exist yet ('The product can't
+    be saved.', seen live on 2.4.6)."""
+    resolver = FakeResolver(
+        attribute_sets={"Default": 4},
+        websites={"base": 1},
+        attributes={"color": AttributeMeta(id=1, code="color", frontend_input="select", backend_type="int", scope="global", options={"gray": "3", "green": "4"})},
+    )
+    rows = [
+        ProductRow(
+            sku="CHILD-1",
+            type="simple",
+        ),
+        ProductRow(
+            sku="PARENT-C",
+            type="configurable",
+            configurable_attributes=["color"],
+            variations=[Variation(sku="CHILD-1", attributes={"color": "Gray"})],
+        ),
+    ]
+
+    result = plan_products(rows, resolver, existing=set())
+
+    assert result.failed == []
+    phases = {op.bulk.endpoint: op.bulk.phase for op in result.operations if op.bulk is not None}
+    assert phases["products"] == 0
+    assert phases["configurable-products/bySku/options"] == 1
+    assert phases["configurable-products/bySku/child"] == 1

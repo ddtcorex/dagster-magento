@@ -405,3 +405,83 @@ def test_configurable_attributes_are_preloaded():
     plan_products([row], resolver, existing=set())
 
     assert {"color", "size"} <= set(resolver.preloaded_codes)
+
+
+def test_grouped_parent_main_save_is_phased_after_children():
+    """A grouped parent save carries its links inline, so Magento validates
+    the linked SKUs while saving it. In bulk mode every save of the bulk is
+    submitted together and consumers process them concurrently, so a parent
+    whose operation runs before a child's save fails with 'The Product with
+    ... doesn't exist' (seen live on 2.4.6; timing hid it on 2.4.9). The
+    parent main therefore plans into a later bulk phase than plain saves."""
+    resolver = _resolver()
+    rows = [
+        ProductRow(sku="CHILD-1", type="simple"),
+        ProductRow(
+            sku="PARENT-G",
+            type="grouped",
+            grouped_links=[GroupedLink(sku="CHILD-1")],
+        ),
+    ]
+
+    result = plan_products(rows, resolver, existing=set())
+
+    assert result.failed == []
+    phases = {op.row_refs[0]: op.bulk.phase for op in result.operations if op.bulk is not None}
+    assert phases["CHILD-1"] == 0
+    assert phases["PARENT-G"] == 1
+
+
+def test_bundle_parent_main_save_is_phased_after_children():
+    """Bundle options carry their selections inline in the parent save, so
+    the same child-must-exist-first rule applies as for grouped parents."""
+    from dagster_magento.models import BundleOption, BundleSelection
+
+    resolver = _resolver()
+    rows = [
+        ProductRow(sku="CHILD-1", type="simple"),
+        ProductRow(
+            sku="PARENT-B",
+            type="bundle",
+            bundle_options=[
+                BundleOption(
+                    title="Pick one",
+                    type="select",
+                    required=True,
+                    selections=[BundleSelection(sku="CHILD-1")],
+                )
+            ],
+        ),
+    ]
+
+    result = plan_products(rows, resolver, existing=set())
+
+    assert result.failed == []
+    phases = {op.row_refs[0]: op.bulk.phase for op in result.operations if op.bulk is not None}
+    assert phases["CHILD-1"] == 0
+    assert phases["PARENT-B"] == 1
+
+
+def test_parents_without_inline_links_stay_in_phase_zero():
+    """A grouped row with no links and a bundle row with no selections
+    reference no other SKU, so they need no ordering."""
+    from dagster_magento.models import BundleOption
+
+    resolver = _resolver()
+    rows = [
+        ProductRow(sku="G", type="grouped"),
+        ProductRow(
+            sku="B",
+            type="bundle",
+            bundle_options=[BundleOption(title="Empty", type="select", required=False, selections=[])],
+        ),
+        ProductRow(sku="S", type="simple"),
+    ]
+
+    result = plan_products(rows, resolver, existing=set())
+
+    assert result.failed == []
+    assert result.operations, "expected planned operations"
+    for op in result.operations:
+        if op.bulk is not None:
+            assert op.bulk.phase == 0, op.row_refs

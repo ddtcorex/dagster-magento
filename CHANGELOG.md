@@ -15,6 +15,16 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
   with a warning naming them, instead of failing the whole import over one
   attribute the store cannot persist through REST.
 
+- Bulk imports no longer let a composite parent save race its children's
+  saves. A grouped parent carries its links inline (`product_links`) and a
+  bundle parent its selections (`bundle_product_options`), so Magento
+  validates the referenced SKUs while saving the parent; submitting every
+  save of one bulk together lets concurrent consumers run the parent first
+  and fail it with 'The Product with ... doesn't exist' (seen live on 2.4.6,
+  timing hid it on 2.4.9). Configurable option and child-link operations need
+  the same ordering and failed with "The product can't be saved.". All of
+  them now plan into a later bulk phase that the executor submits only after
+  every earlier phase has completed.
 
 - The live bulk test no longer loses operations on the sandbox. Magento
   publishes an async bulk on the broker before it commits the rows that bulk
