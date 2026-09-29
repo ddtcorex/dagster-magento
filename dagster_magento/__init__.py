@@ -1,5 +1,6 @@
 """Reusable Dagster resource for Magento 2 REST integrations."""
 
+from dagster_magento.bridge import BridgeClient
 from dagster_magento.bulk import AsyncBulkResult
 from dagster_magento.importers import (
     import_attribute_sets,
@@ -21,6 +22,7 @@ from dagster_magento.upload import UploadResult
 
 __all__ = [
     "AsyncBulkResult",
+    "BridgeClient",
     "MagentoResource",
     "UploadResult",
     "build_search_criteria",

@@ -5,6 +5,18 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Optional client for the `DDTCoreX_DagsterBridge` Magento module
+  (`BridgeClient`): one capability probe per run, the product index for
+  existence, store-scoped attribute values with Magento's own store fallback,
+  and the category upsert. Every importer takes `use_bridge`
+  (`auto`/`never`/`require`), each capability falls back to the native REST path
+  on its own, and the probe is best effort so an optional module can never fail
+  an import.
+- `scripts/bench_prices.py`: times the async bulk `products/bySku` price path
+  against `import_prices` over the same catalog.
+
 ### Fixed
 
 - Category imports no longer fail on Magento 2.4.6 over `default_sort_by`.

@@ -13,6 +13,8 @@
 #   scripts/sandbox.sh consumers               # start 4 async.operations.all consumers
 #   scripts/sandbox.sh env                     # print MAGENTO_* vars for later tasks
 #   scripts/sandbox.sh cron-run                 # run bin/magento cron:run twice
+#   scripts/sandbox.sh bridge                   # enable the optional bridge checkout again
+#   scripts/sandbox.sh bridge-off               # disable it, to prove the native fallback
 #
 # `up` also writes the two settings the async bulk path needs, both into
 # app/etc/env.php: cron_consumers_runner (no cron-managed consumers) and a
@@ -119,6 +121,58 @@ PHP
   rm -f "$helper"
 }
 
+enable_bridge_module() {
+  # The DagsterBridge module is an optional companion checkout that lives inside
+  # this gitignored sandbox tree. When it is present the sandbox enables it, so
+  # the live matrix can exercise the bridge; without the checkout the sandbox
+  # simply runs the library's native paths.
+  local module_dir="$PROJECT_DIR/app/code/DDTCoreX/DagsterBridge"
+  if [[ ! -f "$module_dir/registration.php" ]]; then
+    log "no bridge module checkout at $module_dir, running without it"
+    return 0
+  fi
+  log "enabling the bridge module"
+  ( cd "$PROJECT_DIR" && govard tool magento module:enable DDTCoreX_DagsterBridge )
+  ( cd "$PROJECT_DIR" && govard tool magento setup:upgrade )
+  ( cd "$PROJECT_DIR" && govard tool magento cache:flush )
+}
+
+use_supported_search_backend() {
+  # Magento 2.4.6 ships no OpenSearch adapter: its elasticsearch7 engine
+  # speaks typed URLs (…/document/_bulk) that OpenSearch 2.x rejects with "no
+  # handler found for uri", so every product save fails inline through the
+  # stock→MSI→fulltext chain ("The stock item was unable to be saved").
+  # govard pins OpenSearch 2.5 for 2.4.6, which can never work there, so the
+  # sandbox uses the locally available Elasticsearch 7.17 instead. Newer
+  # Magento (with module-opensearch) keeps the profile default.
+  case "$VERSION" in
+    2.4.6*) ;;
+    *) return 0 ;;
+  esac
+  command -v docker >/dev/null || die "docker is required to switch the search backend for $VERSION"
+  log "switching the search backend to Elasticsearch 7.17 for $VERSION"
+  ( cd "$PROJECT_DIR" && sed -i 's/^\(\s*search:\) opensearch$/\1 elasticsearch/' .govard.yml )
+  ( cd "$PROJECT_DIR" && sed -i 's/^\(\s*search_version:\) .*/\1 "7.17.28"/' .govard.yml )
+  local project
+  project="$(basename "$PROJECT_DIR")"
+  docker rm -f "${project}-elasticsearch-1" >/dev/null 2>&1 || true
+  docker volume rm "${project}_search-data" >/dev/null 2>&1 || true
+  ( cd "$PROJECT_DIR" && govard up )
+  # A fresh Elasticsearch needs up to a couple of minutes for first boot
+  # (JVM + cluster formation); setup:upgrade validates the connection and
+  # fails with "No alive nodes" if it runs too early, so wait for it here.
+  log "waiting for Elasticsearch to answer"
+  local attempt
+  for attempt in $(seq 1 36); do
+    if ( cd "$PROJECT_DIR" && govard elasticsearch / >/dev/null 2>&1 ); then
+      log "Elasticsearch is up"
+      return 0
+    fi
+    sleep 5
+  done
+  die "Elasticsearch did not answer within 3 minutes"
+}
+
 cmd_up() {
   parse_version "$@"
 
@@ -129,6 +183,8 @@ cmd_up() {
   mkdir -p "$PROJECT_DIR"
   log "bootstrapping Magento $VERSION into $PROJECT_DIR"
   ( cd "$PROJECT_DIR" && govard bootstrap --framework magento2 --fresh --framework-version "$VERSION" --yes )
+
+  use_supported_search_backend
 
   # A fresh install's `queue_topology.xml` declarations (async.operations.all
   # among them) are not applied until setup:upgrade runs at least once --
@@ -162,6 +218,7 @@ cmd_up() {
 
   write_cron_consumers_config
   write_db_isolation_config
+  enable_bridge_module
 
   log "sandbox ready at https://$DOMAIN"
 }
@@ -182,12 +239,30 @@ cmd_reset() {
   DEFAULT_VERSION="${existing_version:-$DEFAULT_VERSION}"
 
   parse_version "$@"
+
+  # A reset wipes the project directory, and the optional bridge module is a
+  # git checkout that lives inside it: keep it aside so a reset does not throw
+  # away unpushed work, then put it back and enable it on the fresh install.
+  local stash=""
+  if [[ -d "$PROJECT_DIR/app/code/DDTCoreX" ]]; then
+    stash="$(mktemp -d)"
+    cp -a "$PROJECT_DIR/app/code/DDTCoreX" "$stash/"
+    log "keeping app/code/DDTCoreX across the reset at $stash"
+  fi
+
   if [[ -d "$PROJECT_DIR" ]]; then
     ( cd "$PROJECT_DIR" && govard down -v )
     rm -rf "$PROJECT_DIR"
   fi
   rm -f "$PASSWORD_FILE"
   cmd_up --version "$VERSION"
+
+  if [[ -n "$stash" ]]; then
+    mkdir -p "$PROJECT_DIR/app/code"
+    cp -a "$stash/DDTCoreX" "$PROJECT_DIR/app/code/"
+    rm -rf "$stash"
+    enable_bridge_module
+  fi
 }
 
 cmd_consumers() {
@@ -207,6 +282,14 @@ cmd_cron_run() {
   require_project_dir
   ( cd "$PROJECT_DIR" && govard tool magento cron:run )
   ( cd "$PROJECT_DIR" && govard tool magento cron:run )
+}
+
+cmd_bridge_off() {
+  require_project_dir
+  ( cd "$PROJECT_DIR" && govard tool magento module:disable DDTCoreX_DagsterBridge )
+  ( cd "$PROJECT_DIR" && govard tool magento setup:upgrade )
+  ( cd "$PROJECT_DIR" && govard tool magento cache:flush )
+  log "bridge module disabled"
 }
 
 cmd_env() {
@@ -229,6 +312,8 @@ main() {
     reset) cmd_reset "$@" ;;
     consumers) cmd_consumers "$@" ;;
     cron-run) cmd_cron_run "$@" ;;
+    bridge) enable_bridge_module ;;
+    bridge-off) cmd_bridge_off "$@" ;;
     env) cmd_env "$@" ;;
     *)
       cat >&2 <<USAGE
@@ -238,6 +323,8 @@ Usage: $(basename "$0") <up|down|reset|consumers|env|cron-run> [options]
   reset [--version V]  down -v, then up again with a fresh database
   consumers            start 4 async.operations.all consumer processes
   cron-run             run bin/magento cron:run twice
+  bridge               enable the optional bridge module checkout
+  bridge-off           disable the bridge module, to prove the native fallback
   env                  print MAGENTO_BASE_URL / MAGENTO_ADMIN_USERNAME / MAGENTO_ADMIN_PASSWORD / MAGENTO_STORE_VIEW
 USAGE
       exit 1

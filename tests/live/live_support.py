@@ -90,11 +90,19 @@ def prepare_sandbox() -> None:
     - bulk mode needs async.operations.all consumers running. A consumer
       caches the store list when it starts and answers "The store that was
       requested wasn't found" for a store created later, so consumers are
-      restarted when this call had to create the store view."""
+      restarted when this call had to create the store view;
+    - the search indices must exist before the first product save. Every
+      product save runs the stock→MSI→fulltext chain inline, and concurrent
+      first saves race index creation against each other: the losers get a
+      400 resource_already_exists_exception that rolls the whole save back
+      ("The stock item was unable to be saved", seen live on 2.4.6). A
+      serial fulltext reindex up front creates the indices once, so the
+      saves that follow only write documents."""
     magento_cli("downloadable:domains:add", "firebearstudio.com")
     magento_cli("config:set", "catalog/price/scope", "1")
     created = ensure_store_view("fr", "French")
     magento_cli("cache:flush")
+    magento_cli("indexer:reindex", "catalogsearch_fulltext")
     running = consumer_count()
     if created and running:
         stop_consumers()
@@ -106,19 +114,41 @@ def prepare_sandbox() -> None:
 
 def wait_until_ready(timeout_s: float = 180) -> None:
     """Wait for the admin token endpoint to answer 200. Right after a reset
-    or a cache flush the sandbox briefly answers 503 (seen live)."""
+    or a cache flush the sandbox briefly answers 503 (seen live).
+
+    A ConnectionError means the domain itself stopped resolving: the proxy
+    registration of the domain is lost with the torn-down environment and is
+    not always re-registered by the time the next `govard up` returns. The
+    wait re-registers it once through `govard up` (idempotent) instead of
+    polling a name that resolves to nothing until the deadline."""
     url = f"{os.environ['MAGENTO_BASE_URL']}/rest/V1/integration/admin/token"
     credentials = {"username": os.environ["MAGENTO_ADMIN_USERNAME"], "password": os.environ["MAGENTO_ADMIN_PASSWORD"]}
     deadline = time.monotonic() + timeout_s
+    re_registered = False
     while True:
         try:
             if requests.post(url, json=credentials, timeout=30).status_code == 200:
                 return
         except requests.exceptions.ConnectionError:
-            pass
+            if not re_registered:
+                re_registered = True
+                re_register_domain()
         if time.monotonic() > deadline:
             raise AssertionError(f"sandbox not ready after {timeout_s}s")
         time.sleep(5)
+
+
+def re_register_domain() -> None:
+    """Re-register the sandbox domain with the govard proxy (idempotent)."""
+    completed = subprocess.run(
+        ["govard", "up"],
+        cwd=SANDBOX_PROJECT,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if completed.returncode != 0:
+        print(completed.stdout[-500:], completed.stderr[-500:])
 
 
 def ensure_store_view(code: str, name: str) -> bool:
