@@ -5,6 +5,8 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-29
+
 ### Added
 
 - Optional client for the `DDTCoreX_DagsterBridge` Magento module
