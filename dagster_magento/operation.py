@@ -20,12 +20,18 @@ class BulkSpec:
     The payload dict is treated as immutable once built. Callers must not
     mutate the dict after construction; executors must copy before wrapping
     or merging chunks.
+
+    phase orders bulk submission: the executor submits and waits for every
+    group of phase 0 before any group of phase 1, and so on. Writers use it
+    for saves whose payload references SKUs other rows create, so a parent
+    never races its own children through concurrent consumers.
     """
     endpoint: str
     payload: dict
+    phase: int = 0
 
     def __hash__(self):
-        return hash((self.endpoint, _make_hashable(self.payload)))
+        return hash((self.endpoint, _make_hashable(self.payload), self.phase))
 
 
 @dataclass(frozen=True)

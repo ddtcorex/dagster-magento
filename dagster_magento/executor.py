@@ -254,11 +254,16 @@ def _execute_bulk(
 
     groups: dict[tuple, list[Operation]] = {}
     for op in bulk_ops:
-        key = (op.method, op.bulk.endpoint, op.store_code)
+        key = (op.bulk.phase, op.method, op.bulk.endpoint, op.store_code)
         groups.setdefault(key, []).append(op)
 
     effective_chunk_size = chunk_size if chunk_size is not None else _DEFAULT_BULK_CHUNK_SIZE
-    for (method, bulk_endpoint, store_code), ops in groups.items():
+    # Phases ascend, insertion order within a phase: every group of one phase
+    # is submitted and waited on before the next phase starts, so a grouped
+    # or bundle parent save never runs while its children's saves are still
+    # in flight. sorted is stable, so same-phase groups keep the writer's
+    # order (mains before follow-ups).
+    for (phase, method, bulk_endpoint, store_code), ops in sorted(groups.items(), key=lambda item: item[0][0]):
         for chunk in chunk_rows(ops, effective_chunk_size):
             result = result.merge(
                 _process_bulk_chunk(

@@ -430,3 +430,40 @@ def test_check_error_ratio_raises_above_threshold_and_ignores_none():
         check_error_ratio(result, fail_on_error_ratio=0.5)
 
     check_error_ratio(result, fail_on_error_ratio=0.95)  # 0.9 <= 0.95, no raise
+
+
+def test_bulk_mode_submits_later_phases_only_after_earlier_ones_complete(monkeypatch):
+    """A grouped/bundle parent save must not run while its children's saves
+    are still in flight: with concurrent consumers the parent fails with
+    'The Product with ... doesn't exist' (seen live on 2.4.6). Phase-1
+    groups are therefore submitted only after every phase-0 group has been
+    waited on, in one submission order the stub records."""
+    submitted = []
+
+    # Note the list order: the parent comes first, so insertion order alone
+    # would submit it first. Phase order has to win over list order.
+    ops = [
+        Operation(
+            method="POST", endpoint="products", payload=None, row_refs=("PARENT",),
+            bulk=BulkSpec(endpoint="products", payload={"product": {"sku": "PARENT"}}, phase=1),
+        ),
+        Operation(
+            method="POST", endpoint="products", payload=None, row_refs=("CHILD",),
+            bulk=BulkSpec(endpoint="products", payload={"product": {"sku": "CHILD"}}, phase=0),
+        ),
+    ]
+    resource = StubResource(bulk_uuids=["u-phase-0", "u-phase-1"])
+    monkeypatch.setattr(
+        executor,
+        "wait_bulk",
+        lambda resource, bulk_uuid, count, **kwargs: (
+            submitted.append(bulk_uuid) or [(bulk.STATUS_COMPLETE, None)] * count
+        ),
+    )
+
+    result = execute(resource, ops, mode="bulk")
+
+    assert result.succeeded == 2
+    first_items = resource.submit_bulk_calls[0][2]
+    assert [item["product"]["sku"] for item in first_items] == ["CHILD"]
+    assert submitted == ["u-phase-0", "u-phase-1"]
