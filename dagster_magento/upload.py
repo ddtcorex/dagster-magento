@@ -1,8 +1,29 @@
+import json
 from dataclasses import dataclass, field
 from typing import Callable
 
 import requests
 
+
+
+def http_error_details(error: requests.exceptions.HTTPError) -> tuple[int | None, str]:
+    """The status code and a row-safe message for a failed request.
+
+    The message embeds the first 1000 characters of the response body, minus
+    Magento's `trace` key: in developer mode it carries a full stack trace
+    with server paths that has no place in a row error."""
+    response = error.response
+    if response is None:
+        return None, str(error)
+    body = response.text
+    try:
+        parsed = response.json()
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and "trace" in parsed:
+        body = json.dumps({key: value for key, value in parsed.items() if key != "trace"})
+    body = body[:1000]
+    return response.status_code, f"{error} - response body: {body}" if body else str(error)
 
 @dataclass
 class UploadResult:
@@ -53,9 +74,7 @@ def run_upload(
         except requests.exceptions.HTTPError as error:
             failed += len(chunk)
             row_ids = [row.get(row_id_field) for row in chunk]
-            status_code = error.response.status_code if error.response is not None else None
-            response_body = error.response.text[:1000] if error.response is not None else ""
-            message = f"{error} - response body: {response_body}" if response_body else str(error)
+            status_code, message = http_error_details(error)
             errors.append(
                 {
                     "chunk_index": index,

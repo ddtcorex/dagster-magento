@@ -7,6 +7,7 @@ only knows how to send an already-built Operation and interpret the
 response, not how a row became one.
 """
 
+import re
 from typing import Literal
 
 import requests
@@ -14,7 +15,7 @@ from dagster import get_dagster_logger
 
 from dagster_magento.bulk import STATUS_COMPLETE, STATUS_OPEN, STATUS_RETRIABLY_FAILED, wait_bulk
 from dagster_magento.operation import Operation
-from dagster_magento.upload import UploadResult, chunk_rows
+from dagster_magento.upload import UploadResult, chunk_rows, http_error_details
 
 # Production defaults from the design spec: list endpoints (prices, source
 # items, ...) chunk larger than bulk submissions do.
@@ -111,13 +112,6 @@ def _dispatch(resource, method: str, endpoint: str, payload, store_code):
     return resource.post(endpoint, payload, store_code=store_code)
 
 
-def _http_error_details(error: requests.exceptions.HTTPError) -> tuple[int | None, str]:
-    status_code = error.response.status_code if error.response is not None else None
-    response_body = error.response.text[:1000] if error.response is not None else ""
-    message = f"{error} - response body: {response_body}" if response_body else str(error)
-    return status_code, message
-
-
 def _phase(op: Operation) -> int:
     return op.bulk.phase if op.bulk is not None else 0
 
@@ -166,7 +160,7 @@ def _send_single(resource, op: Operation, logger) -> UploadResult:
     try:
         _dispatch(resource, op.method, op.endpoint, op.payload, op.store_code)
     except requests.exceptions.HTTPError as error:
-        status_code, message = _http_error_details(error)
+        status_code, message = http_error_details(error)
         logger.warning(f"{op.endpoint}: row(s) {op.row_refs} failed: {message}")
         return UploadResult(
             succeeded=0,
@@ -191,7 +185,7 @@ def _send_list_chunk(resource, method, endpoint, store_code, list_key, chunk, lo
     try:
         response = _dispatch(resource, method, endpoint, payload, store_code)
     except requests.exceptions.HTTPError as error:
-        status_code, message = _http_error_details(error)
+        status_code, message = http_error_details(error)
         row_ids = [ref for op in chunk for ref in op.row_refs]
         logger.warning(f"{endpoint}: chunk of {len(chunk)} operation(s) failed: {message}")
         return UploadResult(
@@ -295,8 +289,15 @@ def _fill_message(message: str, parameters) -> str:
         for key, value in parameters.items():
             message = message.replace(f"%{key}", str(value))
     elif isinstance(parameters, list):
-        for index, value in enumerate(parameters, start=1):
-            message = message.replace(f"%{index}", str(value))
+        # Magento's price storage answers a list ("Invalid attribute
+        # %fieldName = %fieldValue." with ["Price", "-5"]): numbered
+        # placeholders map by number, named ones by order of appearance.
+        if re.search(r"%\d", message):
+            for index, value in enumerate(parameters, start=1):
+                message = message.replace(f"%{index}", str(value))
+        else:
+            values = iter(parameters)
+            message = re.sub(r"%[A-Za-z_]\w*", lambda match: str(next(values, match.group(0))), message)
     return message
 
 
@@ -363,7 +364,7 @@ def _process_bulk_chunk(
         # aborts. Magento answers a partial rejection with 400 too, after it
         # scheduled the accepted items: when the body carries the bulk uuid,
         # those are still polled below and only the rejected ones fail here.
-        status_code, submit_message = _http_error_details(error)
+        status_code, submit_message = http_error_details(error)
         bulk_uuid, rejected = _partial_submission(error)
         if bulk_uuid is None:
             row_ids = [ref for op in ops for ref in op.row_refs]

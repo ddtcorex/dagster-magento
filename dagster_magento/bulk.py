@@ -17,6 +17,8 @@ from typing import Callable
 
 import requests
 
+from dagster_magento.upload import http_error_details
+
 # Magento\Framework\Bulk\OperationInterface status constants.
 STATUS_COMPLETE = 1
 STATUS_RETRIABLY_FAILED = 2
@@ -65,9 +67,7 @@ def run_async_upload(
             response = send(chunk)
         except requests.exceptions.HTTPError as error:
             rejected += len(chunk)
-            status_code = error.response.status_code if error.response is not None else None
-            response_body = error.response.text[:1000] if error.response is not None else ""
-            message = f"{error} - response body: {response_body}" if response_body else str(error)
+            status_code, message = http_error_details(error)
             errors.append(
                 {
                     "chunk_index": index,
