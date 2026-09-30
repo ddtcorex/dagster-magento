@@ -490,3 +490,66 @@ def test_sync_mode_runs_phases_in_ascending_order_stable_within_a_phase():
     assert [call[1].get("product", call[1]).get("sku") for call in resource.post_calls] == [
         "C1", "L", "C2", "PARENT"
     ]
+
+
+def _price_op(sku, price, store_id=0):
+    return Operation(
+        method="POST",
+        endpoint="products/base-prices",
+        payload={"sku": sku, "price": price, "store_id": store_id},
+        row_refs=(sku,),
+        list_key="prices",
+    )
+
+
+def test_unattributable_failed_item_fails_every_row_of_the_request():
+    """Magento rejects a negative price with an item naming only the field and
+    value, not the SKU. The executor cannot tell which row it was, so every
+    row of that request fails with the message: never a false success."""
+    ops = [_price_op("A", -5), _price_op("B", 3)]
+    failed_items = [
+        {"message": "Invalid attribute %fieldName = %fieldValue.",
+         "parameters": {"fieldName": "Price", "fieldValue": -5}}
+    ]
+    resource = StubResource(responses=[failed_items])
+
+    result = execute(resource, ops, mode="sync")
+
+    assert result.succeeded == 0
+    assert result.failed == 2
+    failed_rows = sorted(ref for error in result.errors for ref in error["row_ids"])
+    assert failed_rows == ["A", "B"]
+    assert all("Invalid attribute Price = -5." in error["message"] for error in result.errors)
+
+
+def test_failed_item_is_not_matched_on_a_numeric_price_value():
+    # SKU "5" and a rejected price of 5: the value is a price, not a SKU, so
+    # the item is unattributable and fails the whole request, not just "5".
+    ops = [_price_op("5", 1), _price_op("B", 5)]
+    failed_items = [
+        {"message": "Invalid attribute %fieldName = %fieldValue.",
+         "parameters": {"fieldName": "Price", "fieldValue": 5}}
+    ]
+    resource = StubResource(responses=[failed_items])
+
+    result = execute(resource, ops, mode="sync")
+
+    assert result.failed == 2
+    assert result.succeeded == 0
+
+
+def test_failed_item_naming_a_store_fails_only_that_store_operation():
+    ops = [_price_op("X", 10, store_id=0), _price_op("X", 12, store_id=1)]
+    failed_items = [
+        {"message": "Requested store is not found. Row ID: SKU = %SKU, Store ID: %storeId.",
+         "parameters": {"SKU": "X", "storeId": "1"}}
+    ]
+    resource = StubResource(responses=[failed_items])
+
+    result = execute(resource, ops, mode="sync")
+
+    assert result.succeeded == 1
+    assert result.failed == 1
+    [error] = result.errors
+    assert error["row_ids"] == ["X"]
+    assert "Store ID: 1" in error["message"]

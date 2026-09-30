@@ -622,3 +622,19 @@ def test_sync_grouped_parent_listed_first_is_saved_after_its_child():
 
     assert result.failed == 0
     assert [r.json()["product"]["sku"] for r in writes(m)] == ["C1", "G1"]
+
+
+def test_rejected_price_without_a_sku_is_never_reported_succeeded():
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        for info in ("base-prices-information", "special-price-information", "tier-prices-information"):
+            m.post(f"{BASE}/products/{info}", json=[])
+        m.post(
+            f"{BASE}/products/base-prices",
+            json=[{"message": "Invalid attribute %fieldName = %fieldValue.",
+                   "parameters": {"fieldName": "Price", "fieldValue": -5}}],
+        )
+        result = import_prices(make_resource(), [{"sku": "A", "price": -5}, {"sku": "B", "price": 3}])
+
+    assert result.succeeded == 0
+    assert result.failed == 2
