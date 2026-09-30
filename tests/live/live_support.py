@@ -4,7 +4,9 @@ govard. Imported directly by test modules (tests/live is on sys.path);
 conftest.py holds only hooks and fixtures.
 """
 
+import json
 import os
+import re
 import subprocess
 import textwrap
 import time
@@ -221,3 +223,50 @@ def govard_php(body: str, timeout: float = 300) -> str:
     finally:
         script.unlink(missing_ok=True)
     return completed.stdout
+
+
+def normalize_database(version: str) -> str:
+    """'11.8.2-MariaDB-ubu2404' -> 'MariaDB 11.8.2'; a plain number is MySQL."""
+    number = re.match(r"[\d.]+", version).group(0)
+    return f"{'MariaDB' if 'mariadb' in version.lower() else 'MySQL'} {number}"
+
+
+def govard_setting(text: str, key: str) -> str | None:
+    """A `key: value` line from a .govard.yml, quotes removed."""
+    match = re.search(rf"^\s*{re.escape(key)}:\s*(.+?)\s*$", text, re.MULTILINE)
+    return match.group(1).strip("\"'") if match else None
+
+
+def sandbox_facts() -> dict:
+    """What the compatibility record states about the running sandbox: the
+    exact Magento version (with patch), PHP, database, search engine and the
+    bridge module version the capabilities endpoint reports."""
+    output = govard_php(
+        textwrap.dedent(
+            """
+            $om = \\Magento\\Framework\\App\\Bootstrap::create(BP, $_SERVER)->getObjectManager();
+            $config = $om->get(\\Magento\\Framework\\App\\Config\\ScopeConfigInterface::class);
+            $connection = $om->get(\\Magento\\Framework\\App\\ResourceConnection::class)->getConnection();
+            echo "\\n" . json_encode([
+                'magento' => $om->get(\\Magento\\Framework\\App\\ProductMetadataInterface::class)->getVersion(),
+                'php' => PHP_VERSION,
+                'database' => $connection->fetchOne('SELECT VERSION()'),
+                'engine' => $config->getValue('catalog/search/engine'),
+            ]) . "\\n";
+            """
+        )
+    )
+    raw = json.loads(next(line for line in reversed(output.splitlines()) if line.startswith("{")))
+    govard_yml = (SANDBOX_PROJECT / ".govard.yml").read_text()
+    search_version = govard_setting(govard_yml, "search_version")
+    try:
+        bridge = str(make_resource().get("dagster-bridge/capabilities").get("version", "unknown"))
+    except Exception:  # noqa: BLE001 - a store without the module answers 404
+        bridge = "not installed"
+    return {
+        "magento": raw["magento"],
+        "php": raw["php"],
+        "database": normalize_database(raw["database"]),
+        "search": f"{raw['engine']} {search_version}" if search_version else raw["engine"],
+        "bridge": bridge,
+    }

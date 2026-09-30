@@ -79,3 +79,56 @@ def test_write_table_replaces_between_markers_and_errors_without_them(tmp_path):
     bare.write_text("no markers here\n")
     with pytest.raises(ValueError):
         compat_record.write_table(str(bare), "| new |")
+
+
+def test_cli_record_then_table_round_trip(tmp_path, capsys):
+    junit = tmp_path / "junit.xml"
+    junit.write_text(JUNIT)
+    facts = tmp_path / "facts.json"
+    facts.write_text('{"magento": "2.4.9", "php": "8.4.1", "database": "MariaDB 11.8.2", "search": "opensearch 3.0", "bridge": "1.0.0"}')
+    results = tmp_path / "results"
+    results.mkdir()
+    readme = tmp_path / "README.md"
+    readme.write_text("<!-- compat:start -->\n<!-- compat:end -->\n")
+
+    assert compat_record.main([
+        "record", "--version", "2.4.9", "--junit", str(junit), "--facts", str(facts),
+        "--date", "2026-09-30", "--status", "failed", "--out", str(results / "2.4.9-2026-09-30.json"),
+    ]) == 0
+    assert compat_record.main([
+        "record", "--version", "2.4.7", "--date", "2026-09-30", "--status", "not provisioned",
+        "--reason", "no image", "--out", str(results / "2.4.7-2026-09-30.json"),
+    ]) == 0
+    # A newer record for the same version replaces an older one in the table.
+    compat_record.main([
+        "record", "--version", "2.4.9", "--junit", str(junit), "--facts", str(facts),
+        "--date", "2026-10-15", "--status", "verified", "--out", str(results / "2.4.9-2026-10-15.json"),
+    ])
+
+    assert compat_record.main(["table", "--results", str(results), "--readme", str(readme)]) == 0
+
+    text = readme.read_text()
+    assert "2026-10-15" in text and "2026-09-30 | failed" not in text
+    assert "not provisioned: no image" in text
+    assert text.count("| 2.4.9 |") == 1
+
+
+def test_cli_table_reports_a_readme_without_markers(tmp_path, capsys):
+    results = tmp_path / "results"
+    results.mkdir()
+    readme = tmp_path / "README.md"
+    readme.write_text("no markers\n")
+
+    assert compat_record.main(["table", "--results", str(results), "--readme", str(readme)]) == 1
+    assert "compat:start" in capsys.readouterr().err
+
+
+def test_render_table_shows_the_reason_of_a_failed_row():
+    tests = [{"name": "a", "outcome": "failed", "seconds": 1.0}]
+    record = compat_record.build_record(
+        "2.4.9", FACTS, tests, "2026-09-30", "failed", reason="sandbox domain stopped resolving"
+    )
+
+    row = compat_record.render_table([record]).splitlines()[2]
+
+    assert "failed (1 of 1 failed): sandbox domain stopped resolving" in row
