@@ -91,7 +91,10 @@ or orchestration that `resource.py` and `importers.py` delegate to.
   label matching, attribute set / website / store / category path lookup,
   parent-first category creation. With a bridge client that advertises
   `categories.upsert`, the module creates the missing nodes in one transaction
-  instead, and the resolver cache is updated the same way.
+  instead, and the resolver cache is updated the same way. A failing upsert
+  (an HTTP error or an answer missing a requested path) falls back to the
+  native creation for that call in `auto` and raises `MagentoImportError` in
+  `require`.
 - `diff.py`: snapshots products, prices, source items and media; skips rows
   that already match, which is what `skipped_unchanged` reports. The product
   snapshot takes an optional bridge client and store id, reads the index for the

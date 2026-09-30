@@ -429,3 +429,69 @@ def test_auto_mode_falls_back_to_rest_when_the_bridge_snapshot_fails():
         result = import_products(make_resource(), [{"sku": "A", "name": "Shirt"}], use_bridge="auto")
 
     assert result.skipped_unchanged == 1
+
+
+# -- category upsert failure ----------------------------------------------------
+
+
+def mock_native_category_tree(mock):
+    mock.get(
+        f"{BASE}/categories?depth=1000",
+        json={"children_data": [{"id": 2, "name": "Default Category", "children_data": []}]},
+    )
+    return mock.post(f"{BASE}/categories", [{"json": {"id": 11}}, {"json": {"id": 12}}])
+
+
+@pytest.mark.parametrize(
+    "upsert_answer",
+    [
+        {"status_code": 400, "json": {"message": "Category path \"%1\" could not be created: x",
+                                      "parameters": ["Default Category/Bad"]}},
+        # A 200 that leaves a requested path out cannot be trusted either.
+        {"status_code": 200, "json": [{"path": "Default Category/Good", "id": 11}]},
+    ],
+)
+def test_auto_mode_falls_back_to_native_creation_when_the_upsert_fails(upsert_answer):
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_capabilities(mock, [BridgeClientClass.CATEGORIES_UPSERT])
+        mock.post(UPSERT_URL, **upsert_answer)
+        created = mock_native_category_tree(mock)
+
+        result = import_categories(
+            make_resource(),
+            [CategoryRow(path="Default Category/Good"), CategoryRow(path="Default Category/Bad")],
+            use_bridge="auto",
+        )
+
+    assert result.succeeded == 2 and result.failed == 0
+    assert [r.json()["category"]["name"] for r in created.request_history] == ["Good", "Bad"]
+
+
+def test_require_mode_raises_when_the_upsert_fails():
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_capabilities(mock, [BridgeClientClass.CATEGORIES_UPSERT])
+        mock.post(UPSERT_URL, status_code=400, json={"message": "could not be created"})
+        created = mock_native_category_tree(mock)
+
+        with pytest.raises(MagentoImportError):
+            import_categories(
+                make_resource(), [CategoryRow(path="Default Category/Good")], use_bridge="require"
+            )
+
+    assert not created.called
+
+
+def test_auth_failure_in_the_upsert_is_never_swallowed(monkeypatch):
+    def refuse(self, paths, root):
+        raise MagentoAuthError("bad credentials")
+
+    monkeypatch.setattr(BridgeClientClass, "upsert_categories", refuse)
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_capabilities(mock, [BridgeClientClass.CATEGORIES_UPSERT])
+        mock_native_category_tree(mock)
+
+        with pytest.raises(MagentoAuthError):
+            import_categories(make_resource(), [CategoryRow(path="Default Category/Good")], use_bridge="auto")

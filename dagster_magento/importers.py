@@ -89,9 +89,10 @@ def _bridge(resource, use_bridge: BridgeMode, capabilities: tuple[str, ...]) -> 
     return client
 
 
-def _resolver(resource, bridge: BridgeClient | None = None):
-    """A resolver that may create categories through the bridge."""
-    return Resolver(resource, bridge=bridge)
+def _resolver(resource, bridge: BridgeClient | None = None, use_bridge: BridgeMode = "auto"):
+    """A resolver that may create categories through the bridge; with
+    `require` a failing upsert raises instead of falling back."""
+    return Resolver(resource, bridge=bridge, bridge_required=use_bridge == "require")
 
 
 def _store_id_for(resolver, resource) -> int:
@@ -227,7 +228,8 @@ def import_attributes(
     already diffs options against the resolver's cache; `diff` is accepted
     for a uniform signature."""
     valid, invalid = _validate(AttributeRow, rows, "code")
-    plan = plan_attributes(valid, _resolver(resource, _bridge(resource, use_bridge, ())), behavior=behavior)
+    resolver = _resolver(resource, _bridge(resource, use_bridge, ()), use_bridge)
+    plan = plan_attributes(valid, resolver, behavior=behavior)
     return _run(resource, [row.code for row in valid], plan, mode, invalid, fail_on_error_ratio)
 
 
@@ -252,7 +254,7 @@ def import_attribute_sets(
     converged after 3 passes"."""
     valid, invalid = _validate(AttributeSetRow, rows, "name")
     bridge = _bridge(resource, use_bridge, ())
-    resolver = _resolver(resource, bridge)
+    resolver = _resolver(resource, bridge, use_bridge)
     active = list(valid)
     done: set = set()
     touched: list[str] = []
@@ -327,7 +329,7 @@ def import_categories(
     store's REST API, and it must not fail the rest of the row."""
     valid, invalid = _validate(CategoryRow, rows, "path")
     plan = plan_categories(
-        valid, _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)))
+        valid, _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)), use_bridge)
     )
     result = _run(
         resource, [row.path for row in valid], plan, mode, invalid, fail_on_error_ratio, noop_succeeded=True
@@ -371,7 +373,7 @@ def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_
     ]
     plan = plan_categories(
         stripped,
-        _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,))),
+        _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)), use_bridge),
     )
     retry = _run(
         resource,
@@ -441,7 +443,7 @@ def import_products(
     bridge = _bridge(
         resource, use_bridge, (BridgeClient.PRODUCT_INDEX, BridgeClient.ATTRIBUTE_VALUES)
     )
-    resolver = _resolver(resource, bridge)
+    resolver = _resolver(resource, bridge, use_bridge)
     skus = list(dict.fromkeys(row.sku for row in valid))
     row_codes = list(dict.fromkeys(code for row in valid for code in row.attributes))
     resolver.preload_attributes(row_codes)
@@ -601,7 +603,7 @@ def import_stocks(
 ):
     """Create MSI stocks bound to website sales channels. `diff` is ignored."""
     valid, invalid = _validate(StockRow, rows, "name")
-    plan = plan_stocks(valid, _resolver(resource, _bridge(resource, use_bridge, ())))
+    plan = plan_stocks(valid, _resolver(resource, _bridge(resource, use_bridge, ()), use_bridge))
     return _run(resource, [row.name for row in valid], plan, mode, invalid, fail_on_error_ratio)
 
 
