@@ -6,14 +6,16 @@ submission, a catalog import layer built on top of it (attribute, attribute
 set, category, product, price, MSI stock and media writers), and file
 adapters for the native csv/json/xlsx import columns.
 
-Targets standard Magento 2 REST endpoints only: no dependency on any
-project-specific custom API module, so the same code runs against Magento
-Open Source 2.4.6+ (verified live on 2.4.9) and any Commerce install.
+Targets standard Magento 2 REST endpoints: the library needs no custom API
+module, so the same code runs against Magento Open Source 2.4.6+ (verified
+live on 2.4.9) and any Commerce install. An optional companion module
+(`DDTCoreX_DagsterBridge`, see "Optional bridge module" below) makes parts of
+the catalog import cheaper when it is installed; nothing requires it.
 
 ## Installation
 
 ```
-pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@v0.2.0"
+pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@v0.3.1"
 ```
 
 `dagster>=1.13.17`, `requests` and `pydantic` v2 come with it. The `xlsx`
@@ -22,8 +24,12 @@ the standard library.
 
 ## Layers
 
-Each layer is a small, independently tested module. Only `resource.py` and
-`importers.py` know about Dagster and Magento at the same time.
+Each layer is a small, independently tested module. Only `resource.py`
+sends HTTP requests to Magento; every other module, `bridge.py` included,
+calls through a `MagentoResource` (the media writer's image download is the
+one other HTTP call, and it goes to the image source). Dagster is used only
+for logging and results, in `resource.py`, `executor.py`,
+`formats/catalog.py` and `importers.py`.
 
 | Module | What it does |
 |---|---|
@@ -37,6 +43,7 @@ Each layer is a small, independently tested module. Only `resource.py` and
 | `operation.py` | `Operation`, `BulkSpec`, `RowError` |
 | `executor.py` | Runs operations in `sync` or `bulk` mode and folds the responses back onto rows |
 | `bulk.py` | `AsyncBulkResult`/`run_async_upload` for submission, `map_detailed_status`/`wait_bulk` for polling |
+| `bridge.py` | `BridgeClient` for the optional `DDTCoreX_DagsterBridge` module: capability probe, product index, attribute values, category upsert |
 | `importers.py` | One function per entity that composes snapshot, diff, plan and execute, plus `to_materialize_result` |
 | `formats/` | Reads csv/json/xlsx and maps the native import columns onto the models |
 
@@ -351,6 +358,33 @@ them once and then only write quantities through `import_source_items`.
 - **Chunking:** 200 rows per bulk request, 1000 rows per list endpoint in
   sync mode (`inventory/source-items`, `products/base-prices` and friends),
   50 SKUs per snapshot URL.
+- **Partial updates:** on a product that already exists, `type`,
+  `attribute_set` and `websites` are sent (and compared by the diff) only
+  when the row sets them. Their defaults (`simple`, `Default`, `base`) apply
+  to creation only, so a row naming a few columns never resets the rest.
+- **Ordering:** in both modes, a grouped or bundle parent that carries its
+  links inline is saved after every other product of the run, so it never
+  references a child that does not exist yet.
+- **Rejected list items:** a list endpoint (price storage, source items)
+  answers 200 with the items it rejected. An item is attributed to the row
+  whose SKU it names (and whose store or source, when it names one). An item
+  that names no row, such as `{"fieldName": "Price", "fieldValue": -5}` for a
+  negative price, fails every row of that request with its message: the row
+  it belongs to cannot be known, and reporting the others succeeded would
+  hide a real rejection.
+- **Bulk submission errors:** an HTTP error when submitting one bulk chunk
+  fails that chunk's rows with the message and the run continues with the
+  other chunks and phases. When the error body still carries a `bulk_uuid`
+  (Magento answers a partial rejection with 400 after scheduling the
+  accepted items), the accepted operations are polled and only the rejected
+  ones fail. `MagentoAuthError` still aborts.
+- **Retries:** GET, PUT and DELETE are retried three times on
+  429/502/503/504 with backoff, honouring `Retry-After`. POST is retried on
+  429 only: a gateway error after a POST can hide a write Magento already
+  committed, and repeating it would create a duplicate category or option,
+  or schedule a bulk twice. That includes the read-only POSTs (price
+  information, bridge attribute values), which fail on a gateway error
+  instead of retrying.
 
 ### Bulk mode
 
@@ -486,7 +520,13 @@ Every importer takes `use_bridge`:
 - `"never"` ignores an installed module, which is how the native paths stay
   proven.
 - `"require"` raises `MagentoImportError` naming the missing capability instead
-  of quietly running a slower path.
+  of quietly running a slower path, and raises as well when a capability it
+  uses fails (a rejected snapshot or category upsert), where `"auto"` falls
+  back to the native path with a warning.
+
+The product snapshot asks the module only for real attribute codes (the module
+rejects anything else) and reads website ids and category links, which live in
+`extension_attributes`, from `GET /V1/products` for the SKUs the index has.
 
 The module answers the store value and the default store value separately, and
 the library applies Magento's own fallback (store value first, the default store
