@@ -41,7 +41,7 @@ from dagster_magento.models import (
     validate_rows,
 )
 from dagster_magento.operation import RowError
-from dagster_magento.resolvers import Resolver
+from dagster_magento.resolvers import ResolveError, Resolver
 from dagster_magento.upload import UploadResult
 from dagster_magento.writers import PlanResult
 from dagster_magento.writers.attribute_sets import plan_attribute_sets
@@ -443,17 +443,22 @@ def import_products(
     )
     resolver = _resolver(resource, bridge)
     skus = list(dict.fromkeys(row.sku for row in valid))
+    row_codes = list(dict.fromkeys(code for row in valid for code in row.attributes))
+    resolver.preload_attributes(row_codes)
     snapshot = snapshot_products(
         resource,
         skus,
         PRODUCT_SNAPSHOT_FIELDS,
         bridge=bridge,
         store_id=_store_id_for(resolver, resource),
+        # Only codes the store knows: an unknown one fails its own row in the
+        # writer, and must not make the module reject the whole snapshot.
+        attribute_codes=[code for code in row_codes if _known_attribute(resolver, code)],
+        require_bridge=use_bridge == "require",
     )
 
     changed, skipped = valid, 0
     if diff and snapshot:
-        resolver.preload_attributes({code for row in valid for code in row.attributes})
         changed = [
             row
             for row in valid
@@ -476,6 +481,14 @@ def import_products(
     follow_ups = _drop_attached_children(resource, follow_ups, existing=set(snapshot))
     result = result.merge(execute(resource, follow_ups, mode=mode))
     return _complete([row.sku for row in changed], plan, result, invalid, skipped, fail_on_error_ratio)
+
+
+def _known_attribute(resolver, code: str) -> bool:
+    try:
+        resolver.attribute(code)
+    except ResolveError:
+        return False
+    return True
 
 
 def _drop_attached_children(resource, operations: list, existing: set[str]) -> list:

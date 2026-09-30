@@ -95,9 +95,13 @@ or orchestration that `resource.py` and `importers.py` delegate to.
 - `diff.py`: snapshots products, prices, source items and media; skips rows
   that already match, which is what `skipped_unchanged` reports. The product
   snapshot takes an optional bridge client and store id, reads the index for the
-  entity fields and the attribute endpoint for the rest, and applies Magento's
-  store fallback (store value first, default store value otherwise), so a store
-  without its own value never reads as a difference.
+  entity fields, the attribute endpoint for real EAV codes only (the module
+  rejects anything else) and `GET /V1/products` for what the module cannot
+  answer (website ids and category links in `extension_attributes`), and
+  applies Magento's store fallback (store value first, default store value
+  otherwise), so a store without its own value never reads as a difference.
+  With `use_bridge="require"` a bridge failure raises `MagentoImportError`;
+  only `auto` falls back to REST, with a warning.
 - `operation.py`: `Operation`, `BulkSpec`, `RowError`.
 - `writers/`: pure planners, one module per entity: rows in, `Operation`
   values out, no HTTP.

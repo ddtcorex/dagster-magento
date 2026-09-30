@@ -18,6 +18,7 @@ from typing import Callable, Literal
 
 import requests
 
+from dagster_magento.executor import MagentoImportError
 from dagster_magento.resolvers import ResolveError, boolean_value
 from dagster_magento.upload import chunk_rows
 
@@ -111,22 +112,45 @@ def _sku_filter_chunks(skus: list[str], size: int):
         yield "in", ",".join(chunk), chunk
 
 
+# Snapshot fields that are not EAV attribute codes. The bridge's attribute
+# endpoint rejects them (400 "Unknown attribute codes"), so a bridge snapshot
+# reads them from `GET /V1/products` instead: website ids and category links
+# live in extension_attributes and nowhere else.
+REST_ONLY_PRODUCT_FIELDS = frozenset({"extension_attributes"})
+
+
 def snapshot_products(
-    resource, skus: list[str], fields: list[str], bridge=None, store_id: int = 0
+    resource,
+    skus: list[str],
+    fields: list[str],
+    bridge=None,
+    store_id: int = 0,
+    attribute_codes=(),
+    require_bridge: bool = False,
 ) -> dict[str, dict]:
     """Fetch the current state of `skus`, keyed by SKU.
 
-    `GET /V1/products` is the default source. With a bridge client whose store
-    advertises the product index, the index answers the entity fields and the
-    attribute endpoint answers the rest, per store, and Magento's own fallback
-    applies: the store value wins when the store has one, otherwise the
-    default store value is used. Either way a SKU Magento does not know about
-    is absent from the result, and the caller reads that as "new row".
+    `GET /V1/products` is the default source, and it answers every custom
+    attribute on its own. With a bridge client whose store advertises the
+    product index, the index answers SKU existence and the entity fields, the
+    attribute endpoint answers the EAV codes among `fields` plus
+    `attribute_codes` (the custom attributes the caller compares), per store,
+    and REST answers only what the module cannot (REST_ONLY_PRODUCT_FIELDS).
+    Magento's own fallback applies to bridge values: the store value wins when
+    the store has one, otherwise the default store value is used. Either way
+    a SKU Magento does not know about is absent from the result, and the
+    caller reads that as "new row".
+
+    A bridge failure falls back to REST with a warning, unless
+    `require_bridge` is set: then it raises MagentoImportError, because the
+    caller asked for the module and must not silently get something else.
     """
     if bridge is not None and bridge.has(bridge.PRODUCT_INDEX):
         try:
-            return _products_from_bridge(bridge, skus, fields, store_id)
-        except requests.exceptions.HTTPError as error:
+            return _products_from_bridge(resource, bridge, skus, fields, list(attribute_codes), store_id)
+        except (requests.exceptions.HTTPError, KeyError, ValueError, TypeError) as error:
+            if require_bridge:
+                raise MagentoImportError(f"bridge product snapshot failed: {error}") from error
             logger.warning(f"bridge snapshot failed ({error}); using the REST snapshot")
 
     return _products_from_rest(resource, skus, fields)
@@ -158,26 +182,57 @@ def _products_from_rest(resource, skus: list[str], fields: list[str]) -> dict[st
     return result
 
 
-def _products_from_bridge(bridge, skus: list[str], fields: list[str], store_id: int) -> dict[str, dict]:
-    """The index for the entity fields and the attribute endpoint for the rest.
+def _products_from_bridge(
+    resource, bridge, skus: list[str], fields: list[str], attribute_codes: list[str], store_id: int
+) -> dict[str, dict]:
+    """The index for existence and the entity fields, the attribute endpoint
+    for EAV codes, REST for the fields the module cannot answer.
 
     Only SKUs the index knows are returned, which is what makes this the same
     answer as the REST snapshot: a product Magento does not have cannot be
-    reported as existing.
+    reported as existing. Without the attribute capability (an older module)
+    the codes come from REST too.
     """
     index = bridge.index_by_sku()
     present = [sku for sku in skus if sku in index]
-    result: dict[str, dict] = {
-        sku: {field: index[sku].get(field) for field in fields} for sku in present
-    }
+    rest_fields = [field for field in fields if field in REST_ONLY_PRODUCT_FIELDS]
+    codes = list(
+        dict.fromkeys(
+            [
+                field
+                for field in fields
+                if field not in bridge.ENTITY_FIELDS and field not in REST_ONLY_PRODUCT_FIELDS
+            ]
+            + attribute_codes
+        )
+    )
+    # Every requested field is present, None until a source answers it.
+    result: dict[str, dict] = {sku: {field: index[sku].get(field) for field in fields} for sku in present}
+    if not present:
+        return result
 
-    codes = [field for field in fields if field not in bridge.ENTITY_FIELDS]
-    if codes and present:
+    use_values = bool(codes) and bridge.has(bridge.ATTRIBUTE_VALUES)
+    if use_values:
         for sku, per_code in bridge.attribute_values(present, codes, store_id=store_id).items():
+            if sku not in result:
+                continue
             for code, (store_value, default_value) in per_code.items():
                 if store_value is None and default_value is None:
                     continue
                 result[sku][code] = store_value if store_value is not None else default_value
+
+    if rest_fields or (codes and not use_values):
+        rest = _products_from_rest(resource, present, rest_fields + ([] if use_values else codes))
+        for sku in present:
+            answered = rest.get(sku, {})
+            for field in rest_fields:
+                # A SKU the index has but REST did not answer reads as None,
+                # which the diff treats as a difference, never as a match.
+                result[sku][field] = answered.get(field)
+            if not use_values:
+                for code in codes:
+                    if answered.get(code) is not None:
+                        result[sku][code] = answered[code]
 
     return result
 
