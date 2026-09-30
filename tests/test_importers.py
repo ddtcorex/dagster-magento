@@ -638,3 +638,19 @@ def test_rejected_price_without_a_sku_is_never_reported_succeeded():
 
     assert result.succeeded == 0
     assert result.failed == 2
+
+
+def test_import_categories_reuses_a_category_that_differs_only_by_case():
+    from dagster_magento.importers import import_categories
+    from dagster_magento.models import CategoryRow
+
+    row = CategoryRow(path="default category/men", attributes={"description": "Men"})
+    with requests_mock.Mocker() as m:
+        _mock_category_tree(m)
+        m.put(f"{BASE}/categories/5", json={"id": 5})
+
+        result = import_categories(make_resource(), [row])
+
+    assert result.failed == 0
+    assert [r for r in m.request_history if r.method == "POST" and r.url.endswith("/categories")] == []
+    assert len(_put_bodies(m, 5)) == 1

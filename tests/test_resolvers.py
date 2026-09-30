@@ -560,3 +560,73 @@ def test_refresh_attribute_sets_clears_caches():
     ]
     assert len(set_requests) == 2  # re-fetched once after refresh_attribute_sets
     assert len(group_requests) == 2  # group cache cleared alongside the set cache
+
+
+def _category_tree(*children):
+    return {
+        "id": 1,
+        "parent_id": 0,
+        "name": "Root Catalog",
+        "children_data": [{"id": 2, "parent_id": 1, "name": "Default Category", "children_data": list(children)}],
+    }
+
+
+def _node(node_id, name, *children):
+    return {"id": node_id, "parent_id": 2, "name": name, "children_data": list(children)}
+
+
+def _category_posts(m):
+    return [r for r in m.request_history if r.method == "POST" and r.path.endswith("/categories")]
+
+
+def test_category_lookup_ignores_case():
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get("https://shop.test/rest/all/V1/categories", json=_category_tree(_node(10, "Men")))
+
+        assert resolver.category_id("default category/MEN") == 10
+        result = resolver.ensure_categories(["Default Category/men"])
+
+    assert result == {"Default Category/men": 10}
+    assert _category_posts(m) == []
+
+
+def test_root_prefix_differing_by_case_does_not_create_a_second_root():
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get("https://shop.test/rest/all/V1/categories", json=_category_tree(_node(10, "Men")))
+        m.post("https://shop.test/rest/all/V1/categories", json={"id": 20, "parent_id": 10, "name": "Tops"})
+
+        resolver.ensure_categories(["default category/Men/Tops"])
+
+    posts = _category_posts(m)
+    assert len(posts) == 1
+    assert posts[0].json()["category"]["parent_id"] == 10
+    assert posts[0].json()["category"]["name"] == "Tops"
+
+
+def test_casefold_not_lower():
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get("https://shop.test/rest/all/V1/categories", json=_category_tree(_node(10, "Straße")))
+
+        assert resolver.category_id("Default Category/STRASSE") == 10
+
+
+def test_sibling_categories_differing_by_case_first_in_tree_wins_with_warning(caplog):
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/categories",
+            json=_category_tree(_node(10, "Men"), _node(11, "men")),
+        )
+        with caplog.at_level("WARNING"):
+            found = resolver.category_id("Default Category/MEN")
+
+    assert found == 10
+    warning = " ".join(record.getMessage() for record in caplog.records)
+    assert "Men" in warning and "men" in warning
