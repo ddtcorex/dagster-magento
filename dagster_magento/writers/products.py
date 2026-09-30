@@ -107,7 +107,7 @@ def _attribute_codes(rows: list[ProductRow]) -> set[str]:
 
 
 def _plan_row(row: ProductRow, resolver, is_existing: bool) -> list[Operation]:
-    body = _product_body(row, resolver)
+    body = _product_body(row, resolver, is_existing)
     # apply_type_parts mutates `body` in place, so it must run before the
     # main operation copies `body` into its own payload/bulk dicts - a
     # copy taken first would carry none of the type-specific fields.
@@ -118,12 +118,17 @@ def _plan_row(row: ProductRow, resolver, is_existing: bool) -> list[Operation]:
     return operations
 
 
-def _product_body(row: ProductRow, resolver) -> dict[str, Any]:
-    body: dict[str, Any] = {
-        "sku": row.sku,
-        "type_id": row.type,
-        "attribute_set_id": _attribute_set_id(row.attribute_set, resolver),
-    }
+def _product_body(row: ProductRow, resolver, is_existing: bool = False) -> dict[str, Any]:
+    # A new product takes the model defaults for type, set and websites; an
+    # existing one only gets what the row named (ProductRow.applies_on_update).
+    def sends(field: str) -> bool:
+        return not is_existing or row.applies_on_update(field)
+
+    body: dict[str, Any] = {"sku": row.sku}
+    if sends("type"):
+        body["type_id"] = row.type
+    if sends("attribute_set"):
+        body["attribute_set_id"] = _attribute_set_id(row.attribute_set, resolver)
     if row.name is not None:
         body["name"] = row.name
     if row.price is not None:
@@ -136,15 +141,16 @@ def _product_body(row: ProductRow, resolver) -> dict[str, Any]:
         body["weight"] = row.weight
     body["custom_attributes"] = _custom_attributes(row.attributes, resolver)
 
-    extension_attributes: dict[str, Any] = {
-        "website_ids": [resolver.website_id(code) for code in row.websites],
-    }
+    extension_attributes: dict[str, Any] = {}
+    if sends("websites"):
+        extension_attributes["website_ids"] = [resolver.website_id(code) for code in row.websites]
     if row.categories:
         extension_attributes["category_links"] = [
             {"position": 0, "category_id": str(resolver.category_id(path))}
             for path in row.categories
         ]
-    body["extension_attributes"] = extension_attributes
+    if extension_attributes:
+        body["extension_attributes"] = extension_attributes
     return body
 
 

@@ -74,7 +74,10 @@ class StubResource:
 
     def submit_bulk(self, method, bulk_endpoint, items, store_code=None):
         self.submit_bulk_calls.append((method, bulk_endpoint, list(items), store_code))
-        return self._bulk_uuids.pop(0)
+        outcome = self._bulk_uuids.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 def test_sync_single_operations_catch_and_continue():
@@ -194,9 +197,10 @@ def test_list_endpoint_http_error_fails_whole_chunk():
         m.post(
             "https://shop.test/rest/all/V1/products/base-prices",
             [
-                # First chunk (SKU0-2): a retryable 503, then a
-                # non-retryable 500 that ends the retry loop and raises.
-                {"status_code": 503},
+                # First chunk (SKU0-2): a retryable 429 (the only status a
+                # POST retries), then a non-retryable 500 that ends the
+                # retry loop and raises.
+                {"status_code": 429},
                 {"status_code": 500, "json": {"message": "Internal error"}},
                 # Second chunk (SKU3): succeeds with no failed items.
                 {"status_code": 200, "json": []},
@@ -467,3 +471,178 @@ def test_bulk_mode_submits_later_phases_only_after_earlier_ones_complete(monkeyp
     first_items = resource.submit_bulk_calls[0][2]
     assert [item["product"]["sku"] for item in first_items] == ["CHILD"]
     assert submitted == ["u-phase-0", "u-phase-1"]
+
+
+def test_sync_mode_runs_phases_in_ascending_order_stable_within_a_phase():
+    """Sync mode honours BulkSpec.phase just as bulk mode does: a grouped or
+    bundle parent listed before its children is saved after them, or Magento
+    rejects it with 'The Product with the C1 SKU doesn't exist'."""
+
+    def op(sku, phase):
+        return Operation(
+            method="POST", endpoint="products", payload={"product": {"sku": sku}}, row_refs=(sku,),
+            bulk=BulkSpec(endpoint="products", payload={"product": {"sku": sku}}, phase=phase),
+        )
+
+    plain = Operation(method="POST", endpoint="links", payload={"sku": "L"}, row_refs=("L",))
+    ops = [op("PARENT", 1), op("C1", 0), plain, op("C2", 0)]
+    resource = StubResource(responses=[[], [], [], []])
+
+    result = execute(resource, ops, mode="sync")
+
+    assert result.succeeded == 4
+    assert [call[1].get("product", call[1]).get("sku") for call in resource.post_calls] == [
+        "C1", "L", "C2", "PARENT"
+    ]
+
+
+def _price_op(sku, price, store_id=0):
+    return Operation(
+        method="POST",
+        endpoint="products/base-prices",
+        payload={"sku": sku, "price": price, "store_id": store_id},
+        row_refs=(sku,),
+        list_key="prices",
+    )
+
+
+def test_unattributable_failed_item_fails_every_row_of_the_request():
+    """Magento rejects a negative price with an item naming only the field and
+    value, not the SKU. The executor cannot tell which row it was, so every
+    row of that request fails with the message: never a false success."""
+    ops = [_price_op("A", -5), _price_op("B", 3)]
+    failed_items = [
+        {"message": "Invalid attribute %fieldName = %fieldValue.",
+         "parameters": {"fieldName": "Price", "fieldValue": -5}}
+    ]
+    resource = StubResource(responses=[failed_items])
+
+    result = execute(resource, ops, mode="sync")
+
+    assert result.succeeded == 0
+    assert result.failed == 2
+    failed_rows = sorted(ref for error in result.errors for ref in error["row_ids"])
+    assert failed_rows == ["A", "B"]
+    assert all("Invalid attribute Price = -5." in error["message"] for error in result.errors)
+
+
+def test_failed_item_is_not_matched_on_a_numeric_price_value():
+    # SKU "5" and a rejected price of 5: the value is a price, not a SKU, so
+    # the item is unattributable and fails the whole request, not just "5".
+    ops = [_price_op("5", 1), _price_op("B", 5)]
+    failed_items = [
+        {"message": "Invalid attribute %fieldName = %fieldValue.",
+         "parameters": {"fieldName": "Price", "fieldValue": 5}}
+    ]
+    resource = StubResource(responses=[failed_items])
+
+    result = execute(resource, ops, mode="sync")
+
+    assert result.failed == 2
+    assert result.succeeded == 0
+
+
+def test_failed_item_naming_a_store_fails_only_that_store_operation():
+    ops = [_price_op("X", 10, store_id=0), _price_op("X", 12, store_id=1)]
+    failed_items = [
+        {"message": "Requested store is not found. Row ID: SKU = %SKU, Store ID: %storeId.",
+         "parameters": {"SKU": "X", "storeId": "1"}}
+    ]
+    resource = StubResource(responses=[failed_items])
+
+    result = execute(resource, ops, mode="sync")
+
+    assert result.succeeded == 1
+    assert result.failed == 1
+    [error] = result.errors
+    assert error["row_ids"] == ["X"]
+    assert "Store ID: 1" in error["message"]
+
+
+def make_http_error_with_body(status_code, body):
+    import json
+
+    response = requests.Response()
+    response.status_code = status_code
+    response._content = json.dumps(body).encode()
+    error = requests.exceptions.HTTPError(f"{status_code} Client Error")
+    error.response = response
+    return error
+
+
+def _bulk_op(sku, phase=0):
+    return Operation(
+        method="POST", endpoint="products", payload=None, row_refs=(sku,),
+        bulk=BulkSpec(endpoint="products", payload={"product": {"sku": sku}}, phase=phase),
+    )
+
+
+def test_bulk_submission_4xx_fails_only_that_chunk_and_the_run_continues(monkeypatch):
+    """Spec section 7: a 4xx fails that chunk's rows, the run continues. The
+    chunk that finished before it and the chunks and phases after it keep
+    their own outcome."""
+    polled = []
+    monkeypatch.setattr(
+        executor,
+        "wait_bulk",
+        lambda resource, bulk_uuid, count, **kwargs: (
+            polled.append(bulk_uuid) or [(bulk.STATUS_COMPLETE, None)] * count
+        ),
+    )
+    rejected = make_http_error_with_body(400, {"message": "Error processing 1 element of input data"})
+    resource = StubResource(bulk_uuids=["u-first", rejected, "u-phase-1"])
+    ops = [_bulk_op("A"), _bulk_op("B"), _bulk_op("P", phase=1)]
+
+    result = execute(resource, ops, mode="bulk", chunk_size=1)
+
+    assert result.succeeded == 2
+    assert result.failed == 1
+    [error] = result.errors
+    assert error["row_ids"] == ["B"]
+    assert error["status_code"] == 400
+    assert "Error processing 1 element" in error["message"]
+    assert polled == ["u-first", "u-phase-1"]
+
+
+def test_bulk_partial_rejection_still_polls_the_accepted_operations(monkeypatch):
+    """Magento schedules the accepted operations and still answers 400 with
+    the bulk uuid when some items are rejected: those accepted operations are
+    polled and merged, the rejected ones fail with their own error."""
+    waits = []
+
+    def fake_wait(resource, bulk_uuid, count, **kwargs):
+        waits.append((bulk_uuid, kwargs.get("skip_ids")))
+        return [(bulk.STATUS_COMPLETE, None), (None, None), (bulk.STATUS_COMPLETE, None)]
+
+    monkeypatch.setattr(executor, "wait_bulk", fake_wait)
+    partial = make_http_error_with_body(
+        400,
+        {
+            "bulk_uuid": "u-partial",
+            "request_items": [
+                {"id": 0, "status": "accepted"},
+                {"id": 1, "status": "rejected", "errors": "sku is required"},
+                {"id": 2, "status": "accepted"},
+            ],
+            "errors": True,
+        },
+    )
+    resource = StubResource(bulk_uuids=[partial])
+
+    result = execute(resource, [_bulk_op("A"), _bulk_op("B"), _bulk_op("C")], mode="bulk")
+
+    assert waits == [("u-partial", frozenset({1}))]
+    assert result.succeeded == 2
+    assert result.failed == 1
+    [error] = result.errors
+    assert error["row_ids"] == ["B"]
+    assert "sku is required" in error["message"]
+
+
+def test_bulk_submission_auth_error_still_aborts():
+    from dagster_magento.resource import MagentoAuthError
+
+    resource = StubResource(bulk_uuids=[MagentoAuthError("bad credentials")])
+
+    with pytest.raises(MagentoAuthError):
+        execute(resource, [_bulk_op("A")], mode="bulk")

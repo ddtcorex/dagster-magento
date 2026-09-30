@@ -582,3 +582,59 @@ def test_categories_retry_reports_failure_when_it_still_fails():
 
     assert result.failed == 1
     assert len(_put_bodies(m, 5)) == 2
+
+
+def test_partial_update_row_keeps_explicitness_through_validation():
+    # The importer re-validates rows it is given; a ProductRow instance must
+    # keep which fields its caller actually set, or every default would be
+    # sent again as if it were explicit.
+    from dagster_magento.models import ProductRow
+
+    existing = [
+        {
+            "sku": "C1",
+            "type_id": "configurable",
+            "attribute_set_id": 9,
+            "name": "Old",
+            "extension_attributes": {"website_ids": [1, 2]},
+            "custom_attributes": [],
+        }
+    ]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m, products=existing)
+        m.put(f"{BASE}/products/C1", json={})
+        result = import_products(make_resource(), [ProductRow(sku="C1", name="New")], use_bridge="never")
+
+    assert result == UploadResult(succeeded=1, failed=0)
+    [put] = writes(m)
+    assert put.json() == {"product": {"sku": "C1", "name": "New", "custom_attributes": []}}
+
+
+def test_sync_grouped_parent_listed_first_is_saved_after_its_child():
+    rows = [
+        {"sku": "G1", "type": "grouped", "grouped_links": [{"sku": "C1"}]},
+        {"sku": "C1", "name": "Child"},
+    ]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m)
+        m.post(f"{BASE}/products", json={})
+        result = import_products(make_resource(), rows, mode="sync", use_bridge="never")
+
+    assert result.failed == 0
+    assert [r.json()["product"]["sku"] for r in writes(m)] == ["C1", "G1"]
+
+
+def test_rejected_price_without_a_sku_is_never_reported_succeeded():
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        for info in ("base-prices-information", "special-price-information", "tier-prices-information"):
+            m.post(f"{BASE}/products/{info}", json=[])
+        m.post(
+            f"{BASE}/products/base-prices",
+            json=[{"message": "Invalid attribute %fieldName = %fieldValue.",
+                   "parameters": {"fieldName": "Price", "fieldValue": -5}}],
+        )
+        result = import_prices(make_resource(), [{"sku": "A", "price": -5}, {"sku": "B", "price": 3}])
+
+    assert result.succeeded == 0
+    assert result.failed == 2

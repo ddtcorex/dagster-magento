@@ -35,11 +35,15 @@ gitignored; never commit them or the generated admin password.
 If `python3 -m venv` fails with `ensurepip is not available`, install the
 system `-venv` package first (for example `python3.14-venv` on Debian).
 
-## Scope: standard Magento REST only
+## Scope: standard Magento REST, with one optional module
 
 Never add a dependency on a bespoke, project-specific companion-module
 endpoint (`products/skus`, `products/ean-sku-mapping`, ...): those belong in
-the consuming project. Keep `MagentoResource` a generic REST client. A new
+the consuming project. Keep `MagentoResource` a generic REST client: it never
+depends on any module, including the optional bridge below. Only the import
+layer may use `DDTCoreX_DagsterBridge`, only through `BridgeClient`, and
+always optionally: every path it offers must also work with the native REST
+endpoints (see "Optional bridge module"). A new
 method must encode non-obvious Magento wire-format behaviour, not alias an
 endpoint path: `resolve_attribute_options` earns its place because the
 option-create endpoint returns a bare id string and existing option labels
@@ -59,8 +63,9 @@ or orchestration that `resource.py` and `importers.py` delegate to.
 
 - `resource.py`: `MagentoResource`. Admin token via
   `POST integration/admin/token`, refreshed once on a 401, retried three
-  times on 429/502/503/504 with 0.5/1/2 s backoff plus jitter and
-  `Retry-After` honoured. `get`/`get_paginated`/`post`/`put`/`delete`/
+  times with 0.5/1/2 s backoff plus jitter and `Retry-After` honoured: GET,
+  PUT and DELETE on 429/502/503/504, POST on 429 only, because a gateway
+  error after a POST may hide a committed write that a retry would repeat. `get`/`get_paginated`/`post`/`put`/`delete`/
   `upload_rows`/`upload_rows_async`/`get_bulk_status`/
   `resolve_attribute_options` are thin wrappers over `_request()`, which
   takes `api_prefix` (default `"V1"`, `"async/bulk/V1"` for bulk submission)
@@ -83,7 +88,7 @@ or orchestration that `resource.py` and `importers.py` delegate to.
   caps, category upsert, and a separator chosen to appear in none of the paths
   it is given. See "Optional bridge module" below for the rules.
 
-### Catalog import layer (v0.2.0): models -> resolvers -> diff -> writers -> executor
+### Catalog import layer: models -> resolvers -> diff -> writers -> executor
 
 - `models.py`: pydantic v2 row models and `validate_rows`; a bad row becomes
   a `RowError`, never an exception.
@@ -91,13 +96,20 @@ or orchestration that `resource.py` and `importers.py` delegate to.
   label matching, attribute set / website / store / category path lookup,
   parent-first category creation. With a bridge client that advertises
   `categories.upsert`, the module creates the missing nodes in one transaction
-  instead, and the resolver cache is updated the same way.
+  instead, and the resolver cache is updated the same way. A failing upsert
+  (an HTTP error or an answer missing a requested path) falls back to the
+  native creation for that call in `auto` and raises `MagentoImportError` in
+  `require`.
 - `diff.py`: snapshots products, prices, source items and media; skips rows
   that already match, which is what `skipped_unchanged` reports. The product
   snapshot takes an optional bridge client and store id, reads the index for the
-  entity fields and the attribute endpoint for the rest, and applies Magento's
-  store fallback (store value first, default store value otherwise), so a store
-  without its own value never reads as a difference.
+  entity fields, the attribute endpoint for real EAV codes only (the module
+  rejects anything else) and `GET /V1/products` for what the module cannot
+  answer (website ids and category links in `extension_attributes`), and
+  applies Magento's store fallback (store value first, default store value
+  otherwise), so a store without its own value never reads as a difference.
+  With `use_bridge="require"` a bridge failure raises `MagentoImportError`;
+  only `auto` falls back to REST, with a warning.
 - `operation.py`: `Operation`, `BulkSpec`, `RowError`.
 - `writers/`: pure planners, one module per entity: rows in, `Operation`
   values out, no HTTP.
@@ -106,8 +118,9 @@ or orchestration that `resource.py` and `importers.py` delegate to.
   resubmits a retriably failed operation once, and maps `async/bulk`
   statuses back onto rows by operation id.
 - `importers.py`: one function per entity composing snapshot, diff, plan and
-  execute, plus `to_materialize_result`. Together with `resource.py` it is the
-  only module that knows both Dagster and Magento.
+  execute, plus `to_materialize_result`. Dagster is used only for logging
+  and results, here and in `resource.py`, `executor.py` and
+  `formats/catalog.py`; only `resource.py` sends HTTP to Magento.
 - `formats/`: csv/json/xlsx readers (`readers.py`, openpyxl behind the
   `xlsx` extra) and the native column mappers (`columns.py` pure string
   parsing, `catalog.py` onto models).
@@ -120,7 +133,8 @@ working without it, so:
 
 - every importer takes `use_bridge` (`auto`, `never`, `require`); `require`
   raises `MagentoImportError` naming the missing capability rather than quietly
-  running a slower path;
+  running a slower path, and also when a capability it uses fails, where
+  `auto` falls back to the native path with a warning;
 - each capability is used on its own, so a store with an older module gets the
   capabilities it has and the native paths for the rest;
 - the probe is best effort: a 404 or a probe that cannot answer at all leaves

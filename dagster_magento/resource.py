@@ -27,6 +27,11 @@ class MagentoResource(ConfigurableResource):
     # gateway failures (502/503/504). Anything else (400, 401 handled
     # separately, 404, ...) is a data/auth problem a retry cannot fix.
     RETRY_STATUSES: ClassVar[tuple[int, ...]] = (429, 502, 503, 504)
+    # POST is not idempotent: a 502/503/504 can come from a gateway that timed
+    # out while Magento committed the write, and a retry would then create a
+    # second category or option, or run an async bulk twice. It is retried
+    # only on 429, which Magento answers before processing anything.
+    POST_RETRY_STATUSES: ClassVar[tuple[int, ...]] = (429,)
     _RETRY_BASE_DELAY_SECONDS: ClassVar[float] = 0.5
     _MAX_RETRIES: ClassVar[int] = 3
 
@@ -117,8 +122,9 @@ class MagentoResource(ConfigurableResource):
             self._fetch_token()
             response = self._send_timed(method, url, endpoint, logger, " retry", **kwargs)
 
+        retry_statuses = self.POST_RETRY_STATUSES if method == "POST" else self.RETRY_STATUSES
         attempt = 0
-        while response.status_code in self.RETRY_STATUSES and attempt < self._MAX_RETRIES:
+        while response.status_code in retry_statuses and attempt < self._MAX_RETRIES:
             retry_after = self._parse_retry_after(response)
             base_delay = self._RETRY_BASE_DELAY_SECONDS * (2**attempt)
             delay = max(retry_after, base_delay) + random.uniform(0, 0.1)

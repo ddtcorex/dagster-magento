@@ -41,7 +41,7 @@ from dagster_magento.models import (
     validate_rows,
 )
 from dagster_magento.operation import RowError
-from dagster_magento.resolvers import Resolver
+from dagster_magento.resolvers import ResolveError, Resolver
 from dagster_magento.upload import UploadResult
 from dagster_magento.writers import PlanResult
 from dagster_magento.writers.attribute_sets import plan_attribute_sets
@@ -89,9 +89,10 @@ def _bridge(resource, use_bridge: BridgeMode, capabilities: tuple[str, ...]) -> 
     return client
 
 
-def _resolver(resource, bridge: BridgeClient | None = None):
-    """A resolver that may create categories through the bridge."""
-    return Resolver(resource, bridge=bridge)
+def _resolver(resource, bridge: BridgeClient | None = None, use_bridge: BridgeMode = "auto"):
+    """A resolver that may create categories through the bridge; with
+    `require` a failing upsert raises instead of falling back."""
+    return Resolver(resource, bridge=bridge, bridge_required=use_bridge == "require")
 
 
 def _store_id_for(resolver, resource) -> int:
@@ -103,7 +104,10 @@ def _store_id_for(resolver, resource) -> int:
 
 
 def _validate(model: type[BaseModel], rows: list, id_field: str) -> tuple[list, list[RowError]]:
-    raw = [row.model_dump() if isinstance(row, BaseModel) else row for row in rows]
+    # exclude_unset keeps which fields a caller's model instance actually
+    # set: re-validating a full dump would mark every default as explicit,
+    # and a partial product update would then reset type, set and websites.
+    raw = [row.model_dump(exclude_unset=True) if isinstance(row, BaseModel) else row for row in rows]
     return validate_rows(model, raw, id_field)
 
 
@@ -224,7 +228,8 @@ def import_attributes(
     already diffs options against the resolver's cache; `diff` is accepted
     for a uniform signature."""
     valid, invalid = _validate(AttributeRow, rows, "code")
-    plan = plan_attributes(valid, _resolver(resource, _bridge(resource, use_bridge, ())), behavior=behavior)
+    resolver = _resolver(resource, _bridge(resource, use_bridge, ()), use_bridge)
+    plan = plan_attributes(valid, resolver, behavior=behavior)
     return _run(resource, [row.code for row in valid], plan, mode, invalid, fail_on_error_ratio)
 
 
@@ -249,7 +254,7 @@ def import_attribute_sets(
     converged after 3 passes"."""
     valid, invalid = _validate(AttributeSetRow, rows, "name")
     bridge = _bridge(resource, use_bridge, ())
-    resolver = _resolver(resource, bridge)
+    resolver = _resolver(resource, bridge, use_bridge)
     active = list(valid)
     done: set = set()
     touched: list[str] = []
@@ -324,7 +329,7 @@ def import_categories(
     store's REST API, and it must not fail the rest of the row."""
     valid, invalid = _validate(CategoryRow, rows, "path")
     plan = plan_categories(
-        valid, _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)))
+        valid, _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)), use_bridge)
     )
     result = _run(
         resource, [row.path for row in valid], plan, mode, invalid, fail_on_error_ratio, noop_succeeded=True
@@ -368,7 +373,7 @@ def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_
     ]
     plan = plan_categories(
         stripped,
-        _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,))),
+        _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)), use_bridge),
     )
     retry = _run(
         resource,
@@ -438,19 +443,24 @@ def import_products(
     bridge = _bridge(
         resource, use_bridge, (BridgeClient.PRODUCT_INDEX, BridgeClient.ATTRIBUTE_VALUES)
     )
-    resolver = _resolver(resource, bridge)
+    resolver = _resolver(resource, bridge, use_bridge)
     skus = list(dict.fromkeys(row.sku for row in valid))
+    row_codes = list(dict.fromkeys(code for row in valid for code in row.attributes))
+    resolver.preload_attributes(row_codes)
     snapshot = snapshot_products(
         resource,
         skus,
         PRODUCT_SNAPSHOT_FIELDS,
         bridge=bridge,
         store_id=_store_id_for(resolver, resource),
+        # Only codes the store knows: an unknown one fails its own row in the
+        # writer, and must not make the module reject the whole snapshot.
+        attribute_codes=[code for code in row_codes if _known_attribute(resolver, code)],
+        require_bridge=use_bridge == "require",
     )
 
     changed, skipped = valid, 0
     if diff and snapshot:
-        resolver.preload_attributes({code for row in valid for code in row.attributes})
         changed = [
             row
             for row in valid
@@ -473,6 +483,14 @@ def import_products(
     follow_ups = _drop_attached_children(resource, follow_ups, existing=set(snapshot))
     result = result.merge(execute(resource, follow_ups, mode=mode))
     return _complete([row.sku for row in changed], plan, result, invalid, skipped, fail_on_error_ratio)
+
+
+def _known_attribute(resolver, code: str) -> bool:
+    try:
+        resolver.attribute(code)
+    except ResolveError:
+        return False
+    return True
 
 
 def _drop_attached_children(resource, operations: list, existing: set[str]) -> list:
@@ -585,7 +603,7 @@ def import_stocks(
 ):
     """Create MSI stocks bound to website sales channels. `diff` is ignored."""
     valid, invalid = _validate(StockRow, rows, "name")
-    plan = plan_stocks(valid, _resolver(resource, _bridge(resource, use_bridge, ())))
+    plan = plan_stocks(valid, _resolver(resource, _bridge(resource, use_bridge, ()), use_bridge))
     return _run(resource, [row.name for row in valid], plan, mode, invalid, fail_on_error_ratio)
 
 

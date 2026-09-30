@@ -293,3 +293,205 @@ def test_auth_failure_is_never_swallowed_by_the_probe():
 
         with pytest.raises(MagentoAuthError):
             BridgeClient(make_resource()).capabilities()
+
+
+# -- product snapshot through the importer's real field set -------------------
+
+# The EAV codes the fake module knows. Anything else (extension_attributes,
+# website_ids, ...) is rejected the way the real module rejects it.
+KNOWN_ATTRIBUTE_CODES = {"name", "price", "visibility", "weight", "status", "color"}
+
+
+def mock_product_catalog(mock, rest_items):
+    """Everything import_products needs besides the bridge itself."""
+    mock.get(
+        f"{BASE}/eav/attribute-sets/list",
+        json={"items": [{"attribute_set_name": "Default", "attribute_set_id": 4}]},
+    )
+    mock.get(f"{BASE}/store/websites", json=[{"code": "base", "id": 1}, {"code": "fr", "id": 2}])
+    mock.get(
+        f"{BASE}/products/attributes",
+        json={
+            "items": [
+                {"attribute_id": 93, "attribute_code": "color", "frontend_input": "select",
+                 "backend_type": "int", "options": [{"label": "Red", "value": "12"}]}
+            ]
+        },
+    )
+    return mock.get(f"{BASE}/products", json={"items": rest_items})
+
+
+def fake_attribute_values(store_values):
+    """A module answer that 400s on unknown codes, like the real module."""
+
+    def answer(request, context):
+        body = request.json()
+        unknown = sorted(set(body["attribute_codes"]) - KNOWN_ATTRIBUTE_CODES)
+        if unknown:
+            context.status_code = 400
+            return {"message": "Unknown attribute codes: %1.", "parameters": [", ".join(unknown)]}
+        return [
+            {"sku": sku, "attribute_code": code, "default_value": store_values.get(sku, {}).get(code)}
+            for sku in body["skus"]
+            for code in body["attribute_codes"]
+        ]
+
+    return answer
+
+
+def mock_bridge_products(mock, index_items, store_values):
+    mock_capabilities(mock, ALL_CAPABILITIES)
+    mock.get(f"{INDEX_URL}?after=0&limit=5000", json={"items": index_items, "next_after": None})
+    return mock.post(VALUES_URL, json=fake_attribute_values(store_values))
+
+
+INDEX_A = {"sku": "A", "entity_id": 1, "type_id": "simple", "attribute_set_id": 4, "status": 1}
+
+
+def test_bridge_snapshot_sends_only_attribute_codes_and_reads_the_rest_from_rest():
+    """The importer's real field set goes to a module that rejects unknown
+    codes: only EAV codes are asked for, website ids come from REST, and a
+    row that already matches is skipped instead of failing or falling back."""
+    from dagster_magento.importers import import_products
+
+    rows = [
+        {"sku": "A", "name": "Shirt", "websites": ["base"], "attributes": {"color": "Red"}},
+        {"sku": "B", "name": "New"},
+    ]
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        values = mock_bridge_products(mock, [INDEX_A], {"A": {"name": "Shirt", "color": "12"}})
+        rest = mock_product_catalog(
+            mock, [{"sku": "A", "extension_attributes": {"website_ids": [1]}}]
+        )
+        created = mock.post(f"{BASE}/products", json={})
+
+        result = import_products(make_resource(), rows, use_bridge="require")
+
+    codes = values.last_request.json()["attribute_codes"]
+    assert "extension_attributes" not in codes
+    assert "color" in codes and "name" in codes
+    assert rest.called
+    assert "extension_attributes" in rest.last_request.qs["fields"][0]
+    assert result.skipped_unchanged == 1
+    assert result.succeeded == 1 and result.failed == 0
+    assert [r.json()["product"]["sku"] for r in created.request_history] == ["B"]
+
+
+def test_bridge_snapshot_reports_a_website_change_read_from_rest():
+    from dagster_magento.importers import import_products
+
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_bridge_products(mock, [INDEX_A], {"A": {"name": "Shirt"}})
+        mock_product_catalog(mock, [{"sku": "A", "extension_attributes": {"website_ids": [1]}}])
+        updated = mock.put(f"{BASE}/products/A", json={})
+
+        result = import_products(
+            make_resource(), [{"sku": "A", "name": "Shirt", "websites": ["base", "fr"]}],
+            use_bridge="require",
+        )
+
+    assert result.succeeded == 1
+    assert updated.called
+
+
+def test_require_mode_raises_when_the_bridge_snapshot_fails():
+    from dagster_magento.importers import import_products
+
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_capabilities(mock, ALL_CAPABILITIES)
+        mock.get(f"{INDEX_URL}?after=0&limit=5000", json={"items": [INDEX_A], "next_after": None})
+        mock.post(VALUES_URL, status_code=500, json={"message": "boom"})
+        rest = mock_product_catalog(mock, [])
+
+        with pytest.raises(MagentoImportError):
+            import_products(make_resource(), [{"sku": "A", "name": "Shirt"}], use_bridge="require")
+
+    assert not rest.called
+
+
+def test_auto_mode_falls_back_to_rest_when_the_bridge_snapshot_fails():
+    from dagster_magento.importers import import_products
+
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_capabilities(mock, ALL_CAPABILITIES)
+        mock.get(f"{INDEX_URL}?after=0&limit=5000", json={"items": [INDEX_A], "next_after": None})
+        mock.post(VALUES_URL, status_code=500, json={"message": "boom"})
+        mock_product_catalog(
+            mock,
+            [{"sku": "A", "type_id": "simple", "attribute_set_id": 4, "name": "Shirt",
+              "extension_attributes": {"website_ids": [1]}, "custom_attributes": []}],
+        )
+
+        result = import_products(make_resource(), [{"sku": "A", "name": "Shirt"}], use_bridge="auto")
+
+    assert result.skipped_unchanged == 1
+
+
+# -- category upsert failure ----------------------------------------------------
+
+
+def mock_native_category_tree(mock):
+    mock.get(
+        f"{BASE}/categories?depth=1000",
+        json={"children_data": [{"id": 2, "name": "Default Category", "children_data": []}]},
+    )
+    return mock.post(f"{BASE}/categories", [{"json": {"id": 11}}, {"json": {"id": 12}}])
+
+
+@pytest.mark.parametrize(
+    "upsert_answer",
+    [
+        {"status_code": 400, "json": {"message": "Category path \"%1\" could not be created: x",
+                                      "parameters": ["Default Category/Bad"]}},
+        # A 200 that leaves a requested path out cannot be trusted either.
+        {"status_code": 200, "json": [{"path": "Default Category/Good", "id": 11}]},
+    ],
+)
+def test_auto_mode_falls_back_to_native_creation_when_the_upsert_fails(upsert_answer):
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_capabilities(mock, [BridgeClientClass.CATEGORIES_UPSERT])
+        mock.post(UPSERT_URL, **upsert_answer)
+        created = mock_native_category_tree(mock)
+
+        result = import_categories(
+            make_resource(),
+            [CategoryRow(path="Default Category/Good"), CategoryRow(path="Default Category/Bad")],
+            use_bridge="auto",
+        )
+
+    assert result.succeeded == 2 and result.failed == 0
+    assert [r.json()["category"]["name"] for r in created.request_history] == ["Good", "Bad"]
+
+
+def test_require_mode_raises_when_the_upsert_fails():
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_capabilities(mock, [BridgeClientClass.CATEGORIES_UPSERT])
+        mock.post(UPSERT_URL, status_code=400, json={"message": "could not be created"})
+        created = mock_native_category_tree(mock)
+
+        with pytest.raises(MagentoImportError):
+            import_categories(
+                make_resource(), [CategoryRow(path="Default Category/Good")], use_bridge="require"
+            )
+
+    assert not created.called
+
+
+def test_auth_failure_in_the_upsert_is_never_swallowed(monkeypatch):
+    def refuse(self, paths, root):
+        raise MagentoAuthError("bad credentials")
+
+    monkeypatch.setattr(BridgeClientClass, "upsert_categories", refuse)
+    with requests_mock.Mocker() as mock:
+        mock_token(mock)
+        mock_capabilities(mock, [BridgeClientClass.CATEGORIES_UPSERT])
+        mock_native_category_tree(mock)
+
+        with pytest.raises(MagentoAuthError):
+            import_categories(make_resource(), [CategoryRow(path="Default Category/Good")], use_bridge="auto")

@@ -130,15 +130,23 @@ def wait_bulk(
     poll_interval_s: float = 2.0,
     clock=time.monotonic,
     sleep=time.sleep,
+    skip_ids: frozenset[int] = frozenset(),
 ) -> list[tuple[int | None, str | None]]:
     """Poll detailed-status until no operation is OPEN or missing, or the
     timeout expires. Never raises on timeout - callers decide what an
-    open/missing status at the deadline means for their own operation."""
+    open/missing status at the deadline means for their own operation.
+
+    `skip_ids` are operation ids never waited for: the items Magento rejected
+    at submission have no operation, so they would only end at the timeout."""
     deadline = clock() + timeout_s
     while True:
         response = resource.bulk_detailed_status(bulk_uuid)
         statuses = map_detailed_status(response, count)
-        if not any(status is None or status == STATUS_OPEN for status, _ in statuses):
+        if not any(
+            status is None or status == STATUS_OPEN
+            for index, (status, _) in enumerate(statuses)
+            if index not in skip_ids
+        ):
             return statuses
         if clock() >= deadline:
             return statuses

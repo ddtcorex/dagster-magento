@@ -118,7 +118,23 @@ def _http_error_details(error: requests.exceptions.HTTPError) -> tuple[int | Non
     return status_code, message
 
 
+def _phase(op: Operation) -> int:
+    return op.bulk.phase if op.bulk is not None else 0
+
+
 def _execute_sync(resource, operations: list[Operation], chunk_size: int | None) -> UploadResult:
+    # BulkSpec.phase orders sync mode too: a grouped or bundle parent listed
+    # before its children must still be saved after them, or Magento rejects
+    # it with "The Product with the ... SKU doesn't exist". Phases ascend and
+    # each phase keeps the caller's order.
+    result = UploadResult(succeeded=0, failed=0)
+    for phase in sorted({_phase(op) for op in operations}):
+        phase_ops = [op for op in operations if _phase(op) == phase]
+        result = result.merge(_execute_sync_phase(resource, phase_ops, chunk_size))
+    return result
+
+
+def _execute_sync_phase(resource, operations: list[Operation], chunk_size: int | None) -> UploadResult:
     logger = get_dagster_logger()
     result = UploadResult(succeeded=0, failed=0)
 
@@ -187,41 +203,90 @@ def _send_list_chunk(resource, method, endpoint, store_code, list_key, chunk, lo
         )
 
     # A 2xx list-endpoint response body is itself a list of failed items,
-    # e.g. [{"message": "... SKU: %sku.", "parameters": {"sku": "B-404"}}].
-    # Everything not named there succeeded.
-    failed_items = response.json() or []
-    succeeded = 0
+    # e.g. [{"message": "... SKU: %SKU.", "parameters": {"SKU": "B-404"}}].
+    # An item is attributed to the operation whose SKU it names (and whose
+    # store or source, when it names one); everything not named succeeded.
+    body = response.json()
+    failed_items = [item for item in body if isinstance(item, dict)] if isinstance(body, list) else []
+    attributed: set[int] = set()
+    succeeded_ops = []
     failed = 0
     errors = []
     for op in chunk:
-        failed_item = _find_failed_item(op.row_refs, failed_items)
-        if failed_item is None:
-            succeeded += len(op.row_refs)
+        index = _find_failed_item(op, failed_items)
+        if index is None:
+            succeeded_ops.append(op)
             continue
+        attributed.add(index)
+        item = failed_items[index]
         failed += len(op.row_refs)
-        message = _fill_message(failed_item.get("message", ""), failed_item.get("parameters"))
+        message = _fill_message(item.get("message", ""), item.get("parameters"))
         errors.append(
             {"row_ids": list(op.row_refs), "status": "failed", "status_code": None, "message": message}
         )
         logger.warning(f"{endpoint}: row(s) {op.row_refs} failed: {message}")
 
+    # Pessimistic by design: an item that names no row (Magento answers a
+    # rejected price with only {"fieldName": "Price", "fieldValue": -5})
+    # cannot be pinned on one row, so every other row of this request fails
+    # with its message. Reporting them succeeded would hide a real rejection.
+    unattributed = [item for index, item in enumerate(failed_items) if index not in attributed]
+    if unattributed and succeeded_ops:
+        message = "; ".join(
+            _fill_message(item.get("message", ""), item.get("parameters")) for item in unattributed
+        )
+        message = f"rejected item(s) in this request name no row, failing every row: {message}"
+        row_ids = [ref for op in succeeded_ops for ref in op.row_refs]
+        failed += len(row_ids)
+        errors.append({"row_ids": row_ids, "status": "failed", "status_code": None, "message": message})
+        logger.warning(f"{endpoint}: row(s) {row_ids} failed: {message}")
+        succeeded_ops = []
+
+    succeeded = sum(len(op.row_refs) for op in succeeded_ops)
     return UploadResult(succeeded=succeeded, failed=failed, errors=errors)
 
 
-def _find_failed_item(row_refs: tuple, failed_items: list) -> dict | None:
-    for item in failed_items:
-        values = _parameter_values(item.get("parameters"))
-        if any(ref in values for ref in row_refs):
-            return item
+# Parameter keys (casefolded) that scope a failed item further than its SKU,
+# mapped to the payload field they must equal: a failure for SKU X on store 1
+# must not fail X's store 0 operation sent in the same request.
+_SCOPE_PARAMETER_FIELDS = {
+    "storeid": "store_id",
+    "store_id": "store_id",
+    "sourcecode": "source_code",
+    "source_code": "source_code",
+}
+
+
+def _find_failed_item(op: Operation, failed_items: list[dict]) -> int | None:
+    for index, item in enumerate(failed_items):
+        if _item_names_operation(item.get("parameters"), op):
+            return index
     return None
 
 
-def _parameter_values(parameters) -> list:
+def _item_names_operation(parameters, op: Operation) -> bool:
+    """Whether one failed item names this operation.
+
+    Only parameters that hold a SKU are compared to it (a dict key "sku" in
+    any case, or a string in a positional list), never price or quantity
+    values: a rejected price of 5 must not fail the row whose SKU is "5".
+    """
+    payload = op.payload if isinstance(op.payload, dict) else {}
+    sku = payload.get("sku")
+    candidates = {str(sku)} if sku is not None else {str(ref) for ref in op.row_refs}
+
     if isinstance(parameters, dict):
-        return [str(value) for value in parameters.values()]
+        named = [str(value) for key, value in parameters.items() if str(key).casefold() == "sku"]
+        if not any(value in candidates for value in named):
+            return False
+        for key, value in parameters.items():
+            field = _SCOPE_PARAMETER_FIELDS.get(str(key).casefold())
+            if field is not None and field in payload and str(payload[field]) != str(value):
+                return False
+        return True
     if isinstance(parameters, list):
-        return [str(value) for value in parameters]
-    return []
+        return any(isinstance(value, str) and value in candidates for value in parameters)
+    return False
 
 
 def _fill_message(message: str, parameters) -> str:
@@ -289,9 +354,39 @@ def _process_bulk_chunk(
     # are immutable once built (operation.py); submit_bulk sends this list
     # as a bare JSON array, not {"items": [...]}.
     items = [dict(op.bulk.payload) for op in ops]
-    bulk_uuid = resource.submit_bulk(method, bulk_endpoint, items, store_code=store_code)
+    rejected: dict[int, str] = {}
+    try:
+        bulk_uuid = resource.submit_bulk(method, bulk_endpoint, items, store_code=store_code)
+    except requests.exceptions.HTTPError as error:
+        # Spec section 7: a 4xx on one chunk fails that chunk's rows and the
+        # run continues. MagentoAuthError is not an HTTPError and still
+        # aborts. Magento answers a partial rejection with 400 too, after it
+        # scheduled the accepted items: when the body carries the bulk uuid,
+        # those are still polled below and only the rejected ones fail here.
+        status_code, submit_message = _http_error_details(error)
+        bulk_uuid, rejected = _partial_submission(error)
+        if bulk_uuid is None:
+            row_ids = [ref for op in ops for ref in op.row_refs]
+            logger.warning(f"{bulk_endpoint}: bulk chunk of {len(ops)} operation(s) rejected: {submit_message}")
+            return UploadResult(
+                succeeded=0,
+                failed=len(row_ids),
+                errors=[
+                    {"row_ids": row_ids, "status": "failed", "status_code": status_code, "message": submit_message}
+                ],
+            )
+        logger.warning(
+            f"{bulk_endpoint}: bulk {bulk_uuid} partially rejected ({len(rejected)} item(s)); "
+            "polling the accepted operations"
+        )
+        rejected = {index: message or submit_message for index, message in rejected.items()}
     statuses = wait_bulk(
-        resource, bulk_uuid, count=len(ops), timeout_s=timeout_s, poll_interval_s=poll_interval_s
+        resource,
+        bulk_uuid,
+        count=len(ops),
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+        skip_ids=frozenset(rejected),
     )
 
     succeeded = 0
@@ -303,8 +398,13 @@ def _process_bulk_chunk(
     # index i of statuses matches operation id i, i.e. the i-th submitted
     # item, per submit_bulk/wait_bulk's contract - so ops and statuses are
     # matched positionally here.
-    for op, (status, message) in zip(ops, statuses):
-        if status == STATUS_COMPLETE:
+    for index, (op, (status, message)) in enumerate(zip(ops, statuses)):
+        if index in rejected:
+            failed += len(op.row_refs)
+            errors.append(
+                {"row_ids": list(op.row_refs), "status": "failed", "status_code": None, "message": rejected[index]}
+            )
+        elif status == STATUS_COMPLETE:
             succeeded += len(op.row_refs)
         elif status == STATUS_RETRIABLY_FAILED and allow_retry:
             retry_ops.append(op)
@@ -357,3 +457,27 @@ def _process_bulk_chunk(
         )
 
     return result
+
+
+def _partial_submission(error: requests.exceptions.HTTPError) -> tuple[str | None, dict[int, str]]:
+    """The bulk uuid and the rejected item ids (with their errors) a failed
+    submission still carries, or (None, {}) when nothing was scheduled.
+
+    Looks at the top level of the error body and under `parameters`, the
+    two places a webapi error response can hold them."""
+    try:
+        body = error.response.json() if error.response is not None else None
+    except ValueError:
+        return None, {}
+    if not isinstance(body, dict):
+        return None, {}
+    for candidate in (body, body.get("parameters")):
+        if not isinstance(candidate, dict) or not candidate.get("bulk_uuid"):
+            continue
+        rejected = {}
+        for item in candidate.get("request_items") or []:
+            if isinstance(item, dict) and item.get("status") == "rejected" and item.get("id") is not None:
+                errors = item.get("errors")
+                rejected[int(item["id"])] = str(errors) if errors not in (None, "", True) else ""
+        return str(candidate["bulk_uuid"]), rejected
+    return None, {}

@@ -310,3 +310,24 @@ def test_wait_bulk_returns_open_statuses_at_timeout():
     assert result == [(bulk.STATUS_OPEN, None)]
     assert resource.calls == 2
     assert sleeps == [2.0]
+
+
+def test_wait_bulk_does_not_wait_for_skipped_operation_ids():
+    # A rejected item of a partially accepted bulk never gets an operation,
+    # so waiting for it would only ever end at the timeout.
+    from dagster_magento.bulk import STATUS_COMPLETE, wait_bulk
+
+    class Resource:
+        calls = 0
+
+        def bulk_detailed_status(self, bulk_uuid):
+            Resource.calls += 1
+            return {"operations_list": [{"id": 0, "status": STATUS_COMPLETE}]}
+
+    statuses = wait_bulk(
+        Resource(), "u", count=2, timeout_s=60, poll_interval_s=0,
+        skip_ids=frozenset({1}), sleep=lambda seconds: None,
+    )
+
+    assert Resource.calls == 1
+    assert statuses == [(STATUS_COMPLETE, None), (None, None)]

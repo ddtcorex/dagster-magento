@@ -5,6 +5,40 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-30
+
+### Fixed
+
+- Updating an existing product with a partial row no longer resets its type,
+  attribute set and websites. `ProductRow` defaults those to `simple`,
+  `Default` and `base`, and the writer sent them on every update; now an
+  update sends them, and the diff compares them, only when the row set them
+  explicitly. Creation keeps the defaults.
+- Sync mode now honours operation phases like bulk mode does, so a grouped or
+  bundle parent listed before its children is saved after them instead of
+  failing with "The Product with the ... SKU doesn't exist".
+- The bridge product snapshot works. It sent `extension_attributes` to the
+  module as an attribute code, the module answered 400, and the library fell
+  back to REST silently even with `use_bridge="require"`. It now sends only
+  attribute codes (including the custom attributes the rows use), reads
+  website ids and category links from REST, raises `MagentoImportError` on a
+  bridge failure in `require` mode, and falls back with a warning in `auto`.
+- A rejected list item that names no row, such as a negative price answered
+  with `{"fieldName": "Price", "fieldValue": -5}`, is no longer reported as
+  succeeded: it fails every row of its request. Items are matched only on
+  parameters holding a SKU, never on price or quantity values, and a failure
+  naming a store no longer fails the same SKU's other store operation.
+- An HTTP error when submitting one bulk chunk no longer aborts the import:
+  that chunk's rows fail and the run continues. A partial rejection that
+  still returns a `bulk_uuid` is polled for its accepted operations.
+- A failing bridge category upsert (an HTTP error, or an answer missing a
+  requested path) no longer crashes `import_categories`: `auto` falls back to
+  the native parent-first creation, `require` raises `MagentoImportError`.
+- POST requests are no longer retried on 502/503/504, where a gateway error
+  can hide a committed write and a retry would duplicate a category or
+  option, or run a bulk twice. POST retries only on 429; GET, PUT and DELETE
+  keep the full retry set.
+
 ## [0.3.0] - 2026-09-29
 
 ### Added
