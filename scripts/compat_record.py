@@ -7,6 +7,7 @@ render into the README compatibility table.
 
 import argparse
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -48,7 +49,10 @@ def build_record(
 
 
 def _version_key(version: str) -> tuple:
-    return tuple(int(part) if part.isdigit() else part for part in version.split("."))
+    """'2.4.7-p10' sorts as (2, 4, 7, 10) and a base release '2.4.9' as
+    (2, 4, 9, 0), so patches order by number, never as text."""
+    numbers = [int(part) for part in re.findall(r"\d+", version)]
+    return tuple(numbers) if "-p" in version else tuple(numbers + [0])
 
 
 def _result(record: dict) -> str:

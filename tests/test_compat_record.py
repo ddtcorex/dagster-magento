@@ -132,3 +132,17 @@ def test_render_table_shows_the_reason_of_a_failed_row():
     row = compat_record.render_table([record]).splitlines()[2]
 
     assert "failed (1 of 1 failed): sandbox domain stopped resolving" in row
+
+
+def test_render_table_sorts_patch_versions_by_line_then_patch():
+    passed = [{"name": "a", "outcome": "passed", "seconds": 1.0}]
+    records = [
+        compat_record.build_record(version, FACTS, passed, "2026-09-30", "verified")
+        for version in ("2.4.9", "2.4.6-p15", "2.4.8-p5", "2.4.7-p10", "2.4.7-p9")
+    ]
+
+    lines = compat_record.render_table(records).splitlines()
+
+    assert [line.split("|")[1].strip() for line in lines[2:]] == [
+        "2.4.6-p15", "2.4.7-p9", "2.4.7-p10", "2.4.8-p5", "2.4.9",
+    ]

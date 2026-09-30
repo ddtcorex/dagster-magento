@@ -13,7 +13,7 @@ def test_dry_run_lists_the_default_versions_in_order_and_touches_nothing():
 
     assert completed.returncode == 0
     planned = [line.split()[-1] for line in completed.stdout.splitlines() if line.startswith("would run")]
-    assert planned == ["2.4.6", "2.4.7", "2.4.8", "2.4.9"]
+    assert planned == ["2.4.6-p15", "2.4.7-p10", "2.4.8-p5", "2.4.9"]
 
 
 def test_dry_run_honours_an_explicit_version_list():
