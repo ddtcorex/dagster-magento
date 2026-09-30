@@ -1,0 +1,9 @@
+{
+  "body": {
+    "message": "\"%fieldName\" is required. Enter and try again.",
+    "parameters": {
+      "fieldName": "product"
+    }
+  },
+  "status": 400
+}

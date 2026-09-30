@@ -1,0 +1,33 @@
+{
+  "body": {
+    "inverted_special_price_dates": {
+      "body": [],
+      "status": 200
+    },
+    "negative_base_price": {
+      "body": [
+        {
+          "message": "Invalid attribute %fieldName = %fieldValue.",
+          "parameters": [
+            "Price",
+            "-5"
+          ]
+        }
+      ],
+      "status": 200
+    },
+    "unknown_sku_base_price": {
+      "body": [
+        {
+          "message": "Invalid attribute %fieldName = %fieldValue.",
+          "parameters": [
+            "SKU",
+            "probe-price-1790758443-does-not-exist"
+          ]
+        }
+      ],
+      "status": 200
+    }
+  },
+  "status": 200
+}
