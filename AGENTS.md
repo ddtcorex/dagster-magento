@@ -35,11 +35,15 @@ gitignored; never commit them or the generated admin password.
 If `python3 -m venv` fails with `ensurepip is not available`, install the
 system `-venv` package first (for example `python3.14-venv` on Debian).
 
-## Scope: standard Magento REST only
+## Scope: standard Magento REST, with one optional module
 
 Never add a dependency on a bespoke, project-specific companion-module
 endpoint (`products/skus`, `products/ean-sku-mapping`, ...): those belong in
-the consuming project. Keep `MagentoResource` a generic REST client. A new
+the consuming project. Keep `MagentoResource` a generic REST client: it never
+depends on any module, including the optional bridge below. Only the import
+layer may use `DDTCoreX_DagsterBridge`, only through `BridgeClient`, and
+always optionally: every path it offers must also work with the native REST
+endpoints (see "Optional bridge module"). A new
 method must encode non-obvious Magento wire-format behaviour, not alias an
 endpoint path: `resolve_attribute_options` earns its place because the
 option-create endpoint returns a bare id string and existing option labels
@@ -84,7 +88,7 @@ or orchestration that `resource.py` and `importers.py` delegate to.
   caps, category upsert, and a separator chosen to appear in none of the paths
   it is given. See "Optional bridge module" below for the rules.
 
-### Catalog import layer (v0.2.0): models -> resolvers -> diff -> writers -> executor
+### Catalog import layer: models -> resolvers -> diff -> writers -> executor
 
 - `models.py`: pydantic v2 row models and `validate_rows`; a bad row becomes
   a `RowError`, never an exception.
@@ -114,8 +118,9 @@ or orchestration that `resource.py` and `importers.py` delegate to.
   resubmits a retriably failed operation once, and maps `async/bulk`
   statuses back onto rows by operation id.
 - `importers.py`: one function per entity composing snapshot, diff, plan and
-  execute, plus `to_materialize_result`. Together with `resource.py` it is the
-  only module that knows both Dagster and Magento.
+  execute, plus `to_materialize_result`. Dagster is used only for logging
+  and results, here and in `resource.py`, `executor.py` and
+  `formats/catalog.py`; only `resource.py` sends HTTP to Magento.
 - `formats/`: csv/json/xlsx readers (`readers.py`, openpyxl behind the
   `xlsx` extra) and the native column mappers (`columns.py` pure string
   parsing, `catalog.py` onto models).
@@ -128,7 +133,8 @@ working without it, so:
 
 - every importer takes `use_bridge` (`auto`, `never`, `require`); `require`
   raises `MagentoImportError` naming the missing capability rather than quietly
-  running a slower path;
+  running a slower path, and also when a capability it uses fails, where
+  `auto` falls back to the native path with a warning;
 - each capability is used on its own, so a store with an older module gets the
   capabilities it has and the native paths for the rest;
 - the probe is best effort: a 404 or a probe that cannot answer at all leaves
