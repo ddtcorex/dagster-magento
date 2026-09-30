@@ -118,7 +118,23 @@ def _http_error_details(error: requests.exceptions.HTTPError) -> tuple[int | Non
     return status_code, message
 
 
+def _phase(op: Operation) -> int:
+    return op.bulk.phase if op.bulk is not None else 0
+
+
 def _execute_sync(resource, operations: list[Operation], chunk_size: int | None) -> UploadResult:
+    # BulkSpec.phase orders sync mode too: a grouped or bundle parent listed
+    # before its children must still be saved after them, or Magento rejects
+    # it with "The Product with the ... SKU doesn't exist". Phases ascend and
+    # each phase keeps the caller's order.
+    result = UploadResult(succeeded=0, failed=0)
+    for phase in sorted({_phase(op) for op in operations}):
+        phase_ops = [op for op in operations if _phase(op) == phase]
+        result = result.merge(_execute_sync_phase(resource, phase_ops, chunk_size))
+    return result
+
+
+def _execute_sync_phase(resource, operations: list[Operation], chunk_size: int | None) -> UploadResult:
     logger = get_dagster_logger()
     result = UploadResult(succeeded=0, failed=0)
 

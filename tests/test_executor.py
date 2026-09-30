@@ -467,3 +467,26 @@ def test_bulk_mode_submits_later_phases_only_after_earlier_ones_complete(monkeyp
     first_items = resource.submit_bulk_calls[0][2]
     assert [item["product"]["sku"] for item in first_items] == ["CHILD"]
     assert submitted == ["u-phase-0", "u-phase-1"]
+
+
+def test_sync_mode_runs_phases_in_ascending_order_stable_within_a_phase():
+    """Sync mode honours BulkSpec.phase just as bulk mode does: a grouped or
+    bundle parent listed before its children is saved after them, or Magento
+    rejects it with 'The Product with the C1 SKU doesn't exist'."""
+
+    def op(sku, phase):
+        return Operation(
+            method="POST", endpoint="products", payload={"product": {"sku": sku}}, row_refs=(sku,),
+            bulk=BulkSpec(endpoint="products", payload={"product": {"sku": sku}}, phase=phase),
+        )
+
+    plain = Operation(method="POST", endpoint="links", payload={"sku": "L"}, row_refs=("L",))
+    ops = [op("PARENT", 1), op("C1", 0), plain, op("C2", 0)]
+    resource = StubResource(responses=[[], [], [], []])
+
+    result = execute(resource, ops, mode="sync")
+
+    assert result.succeeded == 4
+    assert [call[1].get("product", call[1]).get("sku") for call in resource.post_calls] == [
+        "C1", "L", "C2", "PARENT"
+    ]

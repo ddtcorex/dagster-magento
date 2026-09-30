@@ -608,3 +608,17 @@ def test_partial_update_row_keeps_explicitness_through_validation():
     assert result == UploadResult(succeeded=1, failed=0)
     [put] = writes(m)
     assert put.json() == {"product": {"sku": "C1", "name": "New", "custom_attributes": []}}
+
+
+def test_sync_grouped_parent_listed_first_is_saved_after_its_child():
+    rows = [
+        {"sku": "G1", "type": "grouped", "grouped_links": [{"sku": "C1"}]},
+        {"sku": "C1", "name": "Child"},
+    ]
+    with requests_mock.Mocker() as m:
+        mock_catalog(m)
+        m.post(f"{BASE}/products", json={})
+        result = import_products(make_resource(), rows, mode="sync", use_bridge="never")
+
+    assert result.failed == 0
+    assert [r.json()["product"]["sku"] for r in writes(m)] == ["C1", "G1"]
