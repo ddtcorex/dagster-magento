@@ -179,9 +179,10 @@ class Resolver:
         name = name.strip()
         if not self._attribute_sets:
             self._load_attribute_sets()
-        if name not in self._attribute_sets:
+        key = name.casefold()
+        if key not in self._attribute_sets:
             raise ResolveError(f"unknown attribute set: {name}")
-        return self._attribute_sets[name]
+        return self._attribute_sets[key]
 
     def _load_attribute_sets(self) -> None:
         params = {
@@ -190,9 +191,10 @@ class Resolver:
         }
         response = self.resource.get("eav/attribute-sets/list", params=params)
         for item in response.get("items", []):
-            # Exact, case-sensitive match after strip() - Magento allows
-            # sibling sets differing only in case.
-            self._attribute_sets[item["attribute_set_name"].strip()] = item["attribute_set_id"]
+            # Keyed by the casefolded name: Magento refuses a second set that
+            # differs only by case ("attribute set name already exists",
+            # verified live on 2.4.9), so such a name is the same set.
+            self._attribute_sets[item["attribute_set_name"].strip().casefold()] = item["attribute_set_id"]
 
     def attribute_group_id(self, set_id: int, name: str) -> int | None:
         """Look up a group's id within one attribute set by exact name

@@ -376,7 +376,7 @@ def test_website_id_and_store_id_resolve_by_code():
         resolver.store_id("does-not-exist")
 
 
-def test_attribute_set_id_resolves_by_exact_name():
+def test_attribute_set_id_resolves_by_name():
     resource = make_resource()
     resolver = Resolver(resource)
     with requests_mock.Mocker() as m:
@@ -630,3 +630,19 @@ def test_sibling_categories_differing_by_case_first_in_tree_wins_with_warning(ca
     assert found == 10
     warning = " ".join(record.getMessage() for record in caplog.records)
     assert "Men" in warning and "men" in warning
+
+
+def test_attribute_set_lookup_ignores_case_like_magento_uniqueness():
+    """Verified live on 2.4.9: creating 'caseset' next to 'CaseSet' is refused
+    with 'attribute set name already exists', so a name that differs only by
+    case is the same set and must resolve instead of being created again."""
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/eav/attribute-sets/list",
+            json={"items": [{"attribute_set_id": 4, "attribute_set_name": "Default"}], "total_count": 1},
+        )
+
+        assert resolver.attribute_set_id("default") == 4
+        assert resolver.attribute_set_id("  DEFAULT ") == 4
