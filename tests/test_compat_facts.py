@@ -18,3 +18,54 @@ def test_govard_setting_reads_a_stack_value():
     assert live_support.govard_setting(text, "search_version") == "3.0"
     assert live_support.govard_setting(text, "search") == "opensearch"
     assert live_support.govard_setting(text, "missing") is None
+
+
+def _facts_with_bridge(monkeypatch, tmp_path, get):
+    (tmp_path / ".govard.yml").write_text('stack:\n    search_version: "3.0"\n')
+    monkeypatch.setattr(live_support, "SANDBOX_PROJECT", tmp_path)
+    monkeypatch.setattr(
+        live_support,
+        "govard_php",
+        lambda body: 'deprecated notice\n{"magento":"2.4.9","php":"8.5.9","database":"11.8.8-MariaDB","engine":"opensearch"}\n',
+    )
+
+    class Resource:
+        def get(self, endpoint):
+            return get(endpoint)
+
+    monkeypatch.setattr(live_support, "make_resource", lambda: Resource())
+    return live_support.sandbox_facts()
+
+
+def _http_error(status):
+    import requests
+
+    response = requests.Response()
+    response.status_code = status
+    return requests.exceptions.HTTPError(f"{status}", response=response)
+
+
+def test_sandbox_facts_reads_the_bridge_version(monkeypatch, tmp_path):
+    facts = _facts_with_bridge(monkeypatch, tmp_path, lambda endpoint: {"version": "1.0.0", "capabilities": []})
+
+    assert facts == {
+        "magento": "2.4.9",
+        "php": "8.5.9",
+        "database": "MariaDB 11.8.8",
+        "search": "opensearch 3.0",
+        "bridge": "1.0.0",
+    }
+
+
+def test_only_a_404_means_the_bridge_is_not_installed(monkeypatch, tmp_path):
+    def get(endpoint):
+        raise _http_error(404)
+
+    assert _facts_with_bridge(monkeypatch, tmp_path, get)["bridge"] == "not installed"
+
+
+def test_any_other_failure_reading_the_bridge_is_unknown_not_not_installed(monkeypatch, tmp_path):
+    def get(endpoint):
+        raise _http_error(401)
+
+    assert _facts_with_bridge(monkeypatch, tmp_path, get)["bridge"] == "unknown (HTTP 401)"

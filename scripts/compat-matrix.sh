@@ -103,6 +103,9 @@ for version in "${VERSION_LIST[@]}"; do
   REQUESTS_CA_BUNDLE="$WORK/ca.pem" "$PYTHON" -m pytest -m live -q -p no:cacheprovider \
     --junitxml="$WORK/junit-$version.xml" "$REPO_ROOT/tests" > "$WORK/pytest-$version.log" 2>&1 || status=failed
   tail -n 3 "$WORK/pytest-$version.log" >&2
+  # A test in the suite resets the sandbox, which rotates the admin password:
+  # read the environment again before asking the store anything.
+  eval "$("$SCRIPT_DIR/sandbox.sh" env)"
   reason=""
   if [[ "$status" == failed ]] && ! domain_resolves; then
     reason="the sandbox domain stopped resolving during the run (govard's shared proxy was removed); rerun"

@@ -261,8 +261,11 @@ def sandbox_facts() -> dict:
     search_version = govard_setting(govard_yml, "search_version")
     try:
         bridge = str(make_resource().get("dagster-bridge/capabilities").get("version", "unknown"))
-    except Exception:  # noqa: BLE001 - a store without the module answers 404
-        bridge = "not installed"
+    except requests.exceptions.HTTPError as error:
+        # Only a 404 says the module is absent; any other answer (a stale
+        # credential, a 5xx) is an unknown, never a claim about the store.
+        status = error.response.status_code if error.response is not None else None
+        bridge = "not installed" if status == 404 else f"unknown (HTTP {status})"
     return {
         "magento": raw["magento"],
         "php": raw["php"],
