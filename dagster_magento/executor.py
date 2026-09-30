@@ -354,9 +354,39 @@ def _process_bulk_chunk(
     # are immutable once built (operation.py); submit_bulk sends this list
     # as a bare JSON array, not {"items": [...]}.
     items = [dict(op.bulk.payload) for op in ops]
-    bulk_uuid = resource.submit_bulk(method, bulk_endpoint, items, store_code=store_code)
+    rejected: dict[int, str] = {}
+    try:
+        bulk_uuid = resource.submit_bulk(method, bulk_endpoint, items, store_code=store_code)
+    except requests.exceptions.HTTPError as error:
+        # Spec section 7: a 4xx on one chunk fails that chunk's rows and the
+        # run continues. MagentoAuthError is not an HTTPError and still
+        # aborts. Magento answers a partial rejection with 400 too, after it
+        # scheduled the accepted items: when the body carries the bulk uuid,
+        # those are still polled below and only the rejected ones fail here.
+        status_code, submit_message = _http_error_details(error)
+        bulk_uuid, rejected = _partial_submission(error)
+        if bulk_uuid is None:
+            row_ids = [ref for op in ops for ref in op.row_refs]
+            logger.warning(f"{bulk_endpoint}: bulk chunk of {len(ops)} operation(s) rejected: {submit_message}")
+            return UploadResult(
+                succeeded=0,
+                failed=len(row_ids),
+                errors=[
+                    {"row_ids": row_ids, "status": "failed", "status_code": status_code, "message": submit_message}
+                ],
+            )
+        logger.warning(
+            f"{bulk_endpoint}: bulk {bulk_uuid} partially rejected ({len(rejected)} item(s)); "
+            "polling the accepted operations"
+        )
+        rejected = {index: message or submit_message for index, message in rejected.items()}
     statuses = wait_bulk(
-        resource, bulk_uuid, count=len(ops), timeout_s=timeout_s, poll_interval_s=poll_interval_s
+        resource,
+        bulk_uuid,
+        count=len(ops),
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+        skip_ids=frozenset(rejected),
     )
 
     succeeded = 0
@@ -368,8 +398,13 @@ def _process_bulk_chunk(
     # index i of statuses matches operation id i, i.e. the i-th submitted
     # item, per submit_bulk/wait_bulk's contract - so ops and statuses are
     # matched positionally here.
-    for op, (status, message) in zip(ops, statuses):
-        if status == STATUS_COMPLETE:
+    for index, (op, (status, message)) in enumerate(zip(ops, statuses)):
+        if index in rejected:
+            failed += len(op.row_refs)
+            errors.append(
+                {"row_ids": list(op.row_refs), "status": "failed", "status_code": None, "message": rejected[index]}
+            )
+        elif status == STATUS_COMPLETE:
             succeeded += len(op.row_refs)
         elif status == STATUS_RETRIABLY_FAILED and allow_retry:
             retry_ops.append(op)
@@ -422,3 +457,27 @@ def _process_bulk_chunk(
         )
 
     return result
+
+
+def _partial_submission(error: requests.exceptions.HTTPError) -> tuple[str | None, dict[int, str]]:
+    """The bulk uuid and the rejected item ids (with their errors) a failed
+    submission still carries, or (None, {}) when nothing was scheduled.
+
+    Looks at the top level of the error body and under `parameters`, the
+    two places a webapi error response can hold them."""
+    try:
+        body = error.response.json() if error.response is not None else None
+    except ValueError:
+        return None, {}
+    if not isinstance(body, dict):
+        return None, {}
+    for candidate in (body, body.get("parameters")):
+        if not isinstance(candidate, dict) or not candidate.get("bulk_uuid"):
+            continue
+        rejected = {}
+        for item in candidate.get("request_items") or []:
+            if isinstance(item, dict) and item.get("status") == "rejected" and item.get("id") is not None:
+                errors = item.get("errors")
+                rejected[int(item["id"])] = str(errors) if errors not in (None, "", True) else ""
+        return str(candidate["bulk_uuid"]), rejected
+    return None, {}

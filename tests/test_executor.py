@@ -74,7 +74,10 @@ class StubResource:
 
     def submit_bulk(self, method, bulk_endpoint, items, store_code=None):
         self.submit_bulk_calls.append((method, bulk_endpoint, list(items), store_code))
-        return self._bulk_uuids.pop(0)
+        outcome = self._bulk_uuids.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 def test_sync_single_operations_catch_and_continue():
@@ -553,3 +556,92 @@ def test_failed_item_naming_a_store_fails_only_that_store_operation():
     [error] = result.errors
     assert error["row_ids"] == ["X"]
     assert "Store ID: 1" in error["message"]
+
+
+def make_http_error_with_body(status_code, body):
+    import json
+
+    response = requests.Response()
+    response.status_code = status_code
+    response._content = json.dumps(body).encode()
+    error = requests.exceptions.HTTPError(f"{status_code} Client Error")
+    error.response = response
+    return error
+
+
+def _bulk_op(sku, phase=0):
+    return Operation(
+        method="POST", endpoint="products", payload=None, row_refs=(sku,),
+        bulk=BulkSpec(endpoint="products", payload={"product": {"sku": sku}}, phase=phase),
+    )
+
+
+def test_bulk_submission_4xx_fails_only_that_chunk_and_the_run_continues(monkeypatch):
+    """Spec section 7: a 4xx fails that chunk's rows, the run continues. The
+    chunk that finished before it and the chunks and phases after it keep
+    their own outcome."""
+    polled = []
+    monkeypatch.setattr(
+        executor,
+        "wait_bulk",
+        lambda resource, bulk_uuid, count, **kwargs: (
+            polled.append(bulk_uuid) or [(bulk.STATUS_COMPLETE, None)] * count
+        ),
+    )
+    rejected = make_http_error_with_body(400, {"message": "Error processing 1 element of input data"})
+    resource = StubResource(bulk_uuids=["u-first", rejected, "u-phase-1"])
+    ops = [_bulk_op("A"), _bulk_op("B"), _bulk_op("P", phase=1)]
+
+    result = execute(resource, ops, mode="bulk", chunk_size=1)
+
+    assert result.succeeded == 2
+    assert result.failed == 1
+    [error] = result.errors
+    assert error["row_ids"] == ["B"]
+    assert error["status_code"] == 400
+    assert "Error processing 1 element" in error["message"]
+    assert polled == ["u-first", "u-phase-1"]
+
+
+def test_bulk_partial_rejection_still_polls_the_accepted_operations(monkeypatch):
+    """Magento schedules the accepted operations and still answers 400 with
+    the bulk uuid when some items are rejected: those accepted operations are
+    polled and merged, the rejected ones fail with their own error."""
+    waits = []
+
+    def fake_wait(resource, bulk_uuid, count, **kwargs):
+        waits.append((bulk_uuid, kwargs.get("skip_ids")))
+        return [(bulk.STATUS_COMPLETE, None), (None, None), (bulk.STATUS_COMPLETE, None)]
+
+    monkeypatch.setattr(executor, "wait_bulk", fake_wait)
+    partial = make_http_error_with_body(
+        400,
+        {
+            "bulk_uuid": "u-partial",
+            "request_items": [
+                {"id": 0, "status": "accepted"},
+                {"id": 1, "status": "rejected", "errors": "sku is required"},
+                {"id": 2, "status": "accepted"},
+            ],
+            "errors": True,
+        },
+    )
+    resource = StubResource(bulk_uuids=[partial])
+
+    result = execute(resource, [_bulk_op("A"), _bulk_op("B"), _bulk_op("C")], mode="bulk")
+
+    assert waits == [("u-partial", frozenset({1}))]
+    assert result.succeeded == 2
+    assert result.failed == 1
+    [error] = result.errors
+    assert error["row_ids"] == ["B"]
+    assert "sku is required" in error["message"]
+
+
+def test_bulk_submission_auth_error_still_aborts():
+    from dagster_magento.resource import MagentoAuthError
+
+    resource = StubResource(bulk_uuids=[MagentoAuthError("bad credentials")])
+
+    with pytest.raises(MagentoAuthError):
+        execute(resource, [_bulk_op("A")], mode="bulk")
