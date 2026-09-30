@@ -103,7 +103,10 @@ def _store_id_for(resolver, resource) -> int:
 
 
 def _validate(model: type[BaseModel], rows: list, id_field: str) -> tuple[list, list[RowError]]:
-    raw = [row.model_dump() if isinstance(row, BaseModel) else row for row in rows]
+    # exclude_unset keeps which fields a caller's model instance actually
+    # set: re-validating a full dump would mark every default as explicit,
+    # and a partial product update would then reset type, set and websites.
+    raw = [row.model_dump(exclude_unset=True) if isinstance(row, BaseModel) else row for row in rows]
     return validate_rows(model, raw, id_field)
 
 

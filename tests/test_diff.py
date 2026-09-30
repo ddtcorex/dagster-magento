@@ -542,3 +542,25 @@ def test_price_tier_customer_group_compares_case_insensitively():
     snap = price_snapshot()
     snap["tiers"][0]["customer_group"] = "all groups"
     assert price_matches_snapshot(PriceRow(sku="A", tiers=[{"qty": 5, "price": 7}]), snap)
+
+
+def test_partial_product_row_compares_only_the_fields_it_set():
+    # A row naming only a name must not read as changed because the
+    # existing product is a configurable in another set on two websites:
+    # the writer would not send type, set or websites for it either.
+    snap = product_snapshot(
+        type_id="configurable",
+        attribute_set_id=9,
+        extension_attributes={"website_ids": [1, 2]},
+    )
+    assert product_matches_snapshot(ProductRow(sku="A", name="Shirt"), snap, StubResolver())
+
+
+def test_explicit_type_set_and_websites_are_still_compared():
+    resolver = StubResolver()
+    snap = product_snapshot(type_id="configurable", extension_attributes={"website_ids": [1, 2]})
+    assert not product_matches_snapshot(ProductRow(sku="A", name="Shirt", type="simple"), snap, resolver)
+    assert not product_matches_snapshot(ProductRow(sku="A", name="Shirt", websites=["base"]), snap, resolver)
+    assert not product_matches_snapshot(
+        ProductRow(sku="A", name="Shirt", attribute_set="Default"), product_snapshot(attribute_set_id=9), resolver
+    )

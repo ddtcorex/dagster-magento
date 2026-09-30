@@ -1,6 +1,6 @@
 """Canonical catalog row models for Magento 2 ETL imports."""
 
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, model_validator, ValidationError
 from dagster_magento.operation import RowError
@@ -84,6 +84,16 @@ class ProductRow(BaseModel):
     downloadable_links: list[DownloadableLink] = Field(default_factory=list)
     downloadable_samples: list[DownloadableSample] = Field(default_factory=list)
     images: list[Image] = Field(default_factory=list)
+
+    # Fields whose default only makes sense for a product being created. On
+    # an update the writer sends them, and the diff compares them, only when
+    # the row set them explicitly: a row naming a few columns must never
+    # reset an existing configurable to a simple in "Default" on "base".
+    CREATE_DEFAULTS: ClassVar[frozenset[str]] = frozenset({"type", "attribute_set", "websites"})
+
+    def applies_on_update(self, field: str) -> bool:
+        """Whether `field` belongs in an update of an existing product."""
+        return field not in self.CREATE_DEFAULTS or field in self.model_fields_set
 
     @model_validator(mode="after")
     def validate_configurable(self):

@@ -345,7 +345,9 @@ def product_matches_snapshot(row, snap: dict, resolver) -> bool:
     already equals `snap` (one snapshot_products entry read with
     PRODUCT_SNAPSHOT_FIELDS). Compared: the scalar fields the row sets, its
     custom attributes (labels resolved to option ids without creating
-    any), its website ids, and its category ids when it sets categories.
+    any), and its category ids when it sets categories. Type, attribute set
+    and websites are compared only when the row set them explicitly, as the
+    writer sends them on an update only then.
 
     A false "unchanged" would silently drop a real update, so every doubt
     answers False: an unresolvable label, set, website or category, a
@@ -357,12 +359,17 @@ def product_matches_snapshot(row, snap: dict, resolver) -> bool:
         return False
     extension = snap.get("extension_attributes") or {}
     try:
-        desired = {
-            "type_id": row.type,
-            "attribute_set_id": row.attribute_set
-            if row.attribute_set.isdigit()
-            else resolver.attribute_set_id(row.attribute_set),
-        }
+        # A snapshot exists, so this is an update: compare only what the
+        # writer would send for one (ProductRow.applies_on_update).
+        desired = {}
+        if row.applies_on_update("type"):
+            desired["type_id"] = row.type
+        if row.applies_on_update("attribute_set"):
+            desired["attribute_set_id"] = (
+                row.attribute_set
+                if row.attribute_set.isdigit()
+                else resolver.attribute_set_id(row.attribute_set)
+            )
         for field in ("name", "price", "status", "visibility", "weight"):
             if getattr(row, field) is not None:
                 desired[field] = getattr(row, field)
@@ -374,8 +381,9 @@ def product_matches_snapshot(row, snap: dict, resolver) -> bool:
             wanted[code] = _attribute_kind_value(meta, _row_option_ids(code, value, meta, resolver))
             current[code] = None if snap.get(code) is None else _attribute_kind_value(meta, snap[code])
 
-        wanted["website_ids"] = sorted(resolver.website_id(code) for code in row.websites)
-        current["website_ids"] = sorted(int(value) for value in extension.get("website_ids") or [])
+        if row.applies_on_update("websites"):
+            wanted["website_ids"] = sorted(resolver.website_id(code) for code in row.websites)
+            current["website_ids"] = sorted(int(value) for value in extension.get("website_ids") or [])
         if row.categories:
             wanted["category_ids"] = sorted(resolver.category_id(path) for path in row.categories)
             current["category_ids"] = sorted(

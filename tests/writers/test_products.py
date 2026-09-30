@@ -485,3 +485,43 @@ def test_parents_without_inline_links_stay_in_phase_zero():
     for op in result.operations:
         if op.bulk is not None:
             assert op.bulk.phase == 0, op.row_refs
+
+
+def test_partial_update_of_existing_product_sends_only_the_fields_the_row_set():
+    """An update row naming only a few columns must not reset what it did not
+    name: ProductRow's defaults (type simple, set Default, website base) are
+    only meant for a product being created. A configurable updated with just
+    a name keeps its type, attribute set and websites."""
+    resolver = _resolver()
+    row = ProductRow(sku="C1", name="Renamed")
+
+    result = plan_products([row], resolver, existing={"C1"})
+
+    assert result.failed == []
+    [op] = result.operations
+    expected_product = {"sku": "C1", "name": "Renamed", "custom_attributes": []}
+    assert op.payload == {"product": expected_product}
+    assert op.bulk == BulkSpec("products/bySku", {"sku": "C1", "product": expected_product})
+
+
+def test_update_of_existing_product_still_sends_explicit_type_set_and_websites():
+    resolver = _resolver(attribute_sets={"Default": 4, "Gear": 9})
+    row = ProductRow(sku="C1", type="virtual", attribute_set="Gear", websites=["fr"])
+
+    [op] = plan_products([row], resolver, existing={"C1"}).operations
+
+    product = op.payload["product"]
+    assert product["type_id"] == "virtual"
+    assert product["attribute_set_id"] == 9
+    assert product["extension_attributes"] == {"website_ids": [2]}
+
+
+def test_create_of_new_product_keeps_the_type_set_and_website_defaults():
+    resolver = _resolver()
+
+    [op] = plan_products([ProductRow(sku="N1")], resolver, existing=set()).operations
+
+    product = op.payload["product"]
+    assert product["type_id"] == "simple"
+    assert product["attribute_set_id"] == 4
+    assert product["extension_attributes"] == {"website_ids": [1]}
