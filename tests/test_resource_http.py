@@ -186,3 +186,50 @@ def test_put_and_delete_send_bearer_and_method():
     assert put_requests[0].json() == {"product": {"sku": "SKU-1"}}
     assert put_requests[0].headers["Authorization"] == "Bearer fake-token-123"
     assert delete_requests[0].headers["Authorization"] == "Bearer fake-token-123"
+
+
+TOKEN = "https://shop.test/rest/all/V1/integration/admin/token"
+CATEGORIES = "https://shop.test/rest/all/V1/categories"
+
+
+def _quiet_resource():
+    resource = make_resource()
+    resource._sleep = lambda seconds: None
+    return resource
+
+
+def test_post_is_not_retried_on_a_gateway_error():
+    """A 502/503/504 after a POST may come from a gateway that timed out while
+    Magento committed the write: retrying would create a second category,
+    option or bulk. POST therefore only retries 429."""
+    resource = _quiet_resource()
+    with requests_mock.Mocker() as m:
+        m.post(TOKEN, json="fake-token-123")
+        created = m.post(CATEGORIES, [{"status_code": 502}, {"status_code": 200, "json": {"id": 7}}])
+
+        with pytest.raises(requests.exceptions.HTTPError):
+            resource.post("categories", {"category": {"name": "Men"}})
+
+    assert created.call_count == 1
+
+
+def test_get_is_still_retried_on_a_gateway_error():
+    resource = _quiet_resource()
+    with requests_mock.Mocker() as m:
+        m.post(TOKEN, json="fake-token-123")
+        read = m.get(CATEGORIES, [{"status_code": 502}, {"status_code": 200, "json": {"id": 1}}])
+
+        assert resource.get("categories") == {"id": 1}
+
+    assert read.call_count == 2
+
+
+def test_post_is_retried_on_429():
+    resource = _quiet_resource()
+    with requests_mock.Mocker() as m:
+        m.post(TOKEN, json="fake-token-123")
+        created = m.post(CATEGORIES, [{"status_code": 429}, {"status_code": 200, "json": {"id": 7}}])
+
+        assert resource.post("categories", {"category": {"name": "Men"}}).json() == {"id": 7}
+
+    assert created.call_count == 2

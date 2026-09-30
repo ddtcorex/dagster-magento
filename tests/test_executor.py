@@ -197,9 +197,10 @@ def test_list_endpoint_http_error_fails_whole_chunk():
         m.post(
             "https://shop.test/rest/all/V1/products/base-prices",
             [
-                # First chunk (SKU0-2): a retryable 503, then a
-                # non-retryable 500 that ends the retry loop and raises.
-                {"status_code": 503},
+                # First chunk (SKU0-2): a retryable 429 (the only status a
+                # POST retries), then a non-retryable 500 that ends the
+                # retry loop and raises.
+                {"status_code": 429},
                 {"status_code": 500, "json": {"message": "Internal error"}},
                 # Second chunk (SKU3): succeeds with no failed items.
                 {"status_code": 200, "json": []},

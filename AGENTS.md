@@ -59,8 +59,9 @@ or orchestration that `resource.py` and `importers.py` delegate to.
 
 - `resource.py`: `MagentoResource`. Admin token via
   `POST integration/admin/token`, refreshed once on a 401, retried three
-  times on 429/502/503/504 with 0.5/1/2 s backoff plus jitter and
-  `Retry-After` honoured. `get`/`get_paginated`/`post`/`put`/`delete`/
+  times with 0.5/1/2 s backoff plus jitter and `Retry-After` honoured: GET,
+  PUT and DELETE on 429/502/503/504, POST on 429 only, because a gateway
+  error after a POST may hide a committed write that a retry would repeat. `get`/`get_paginated`/`post`/`put`/`delete`/
   `upload_rows`/`upload_rows_async`/`get_bulk_status`/
   `resolve_attribute_options` are thin wrappers over `_request()`, which
   takes `api_prefix` (default `"V1"`, `"async/bulk/V1"` for bulk submission)
