@@ -81,9 +81,15 @@ def test_probe_bulk_reports_a_consumer_failure_per_operation():
     prepare_sandbox()
     resource = make_resource()
     base_url = os.environ["MAGENTO_BASE_URL"]
-    good_a, good_c = _sku("d"), _sku("f")
+    good_a, bad, good_c = _sku("d"), _sku("e"), _sku("f")
+    # An unknown attribute set fails the save inside the consumer with a
+    # LocalizedException on every line. (A product with no SKU is not a usable
+    # probe: on 2.4.6 it raises a TypeError, which the consumer does not catch,
+    # so the process dies and the operation stays open forever.)
+    unsavable = _product(bad)
+    unsavable["product"]["attribute_set_id"] = 999999
 
-    bulk_uuid = resource.submit_bulk("POST", "products", [_product(good_a), {"product": "x"}, _product(good_c)])
+    bulk_uuid = resource.submit_bulk("POST", "products", [_product(good_a), unsavable, _product(good_c)])
     status = _wait_until_closed(resource, bulk_uuid)
     for operation in status["operations_list"]:
         # The saved product's serialized result is large and not read.
