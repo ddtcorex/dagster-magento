@@ -1,0 +1,20 @@
+{
+  "body": {
+    "bridge_rejected_write": {
+      "body": {
+        "message": "The separator must not be empty."
+      },
+      "status": 400
+    },
+    "library_rejected_write": {
+      "body": {
+        "message": "Invalid product data: %1",
+        "parameters": [
+          "Invalid attribute set entity type"
+        ]
+      },
+      "status": 400
+    }
+  },
+  "status": 400
+}

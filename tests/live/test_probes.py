@@ -14,7 +14,7 @@ import time
 import pytest
 import requests
 from fixture_capture import save_fixture
-from live_support import SANDBOX_PROJECT, make_resource, prepare_sandbox
+from live_support import SANDBOX_PROJECT, make_resource, prepare_sandbox, sandbox
 
 pytestmark = [
     pytest.mark.live,
@@ -141,3 +141,34 @@ def test_probe_price_storage_failed_items():
     # Magento does not validate the order of the dates: an inverted range is
     # stored and reported as a success, so only the library can reject it.
     assert recorded["inverted_special_price_dates"]["body"] == []
+
+
+def test_probe_production_mode_error_bodies():
+    """Production mode masks error detail; record what a rejected library write
+    and a rejected bridge write still tell a caller. The sandbox is returned to
+    developer mode even when a request or an assertion fails."""
+    prepare_sandbox()
+    resource = make_resource()
+    base_url = os.environ["MAGENTO_BASE_URL"]
+    recorded = {}
+    try:
+        assert "deploy mode: production" in sandbox("deploy-mode", "production", timeout=3600)
+        for name, send in {
+            "library_rejected_write": lambda: resource.post(
+                "products",
+                {"product": {"sku": _sku("prod"), "name": "x", "price": 1, "attribute_set_id": 999999, "type_id": "simple"}},
+            ),
+            "bridge_rejected_write": lambda: resource.post(
+                "dagster-bridge/categories/upsert",
+                {"paths": ["Default Category/Probe"], "root": "Default Category", "separator": ""},
+            ),
+        }.items():
+            with pytest.raises(requests.exceptions.HTTPError) as caught:
+                send()
+            body = caught.value.response.json()
+            recorded[name] = {"status": caught.value.response.status_code, "body": body}
+            assert "message" in body, f"{name}: no message in {body!r}"
+    finally:
+        restored = sandbox("deploy-mode", "developer", timeout=3600)
+    assert "deploy mode: developer" in restored
+    save_fixture("production_error_bodies", 400, recorded, base_url=base_url)
