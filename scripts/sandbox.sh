@@ -34,6 +34,33 @@ SANDBOX_ROOT="$REPO_ROOT/sandbox"
 PROJECT_DIR="$SANDBOX_ROOT/dagster-magento-sandbox"
 PASSWORD_FILE="$SANDBOX_ROOT/.admin-password"
 
+# Development leftovers a bridge checkout accumulates (composer dev
+# dependencies, static analysis caches). Magento scans every PHP file under
+# app/code, so setup:di:compile loads them and fails ("Phar wrapper is not
+# registered" out of PHPStan's cache), and a reset would copy hundreds of MB.
+BRIDGE_DEV_ARTIFACTS=(vendor .phpstan.cache .phpunit.cache .phpcs-cache)
+PARKED_DIR=""
+
+park_bridge_dev_artifacts() {
+  local module="$PROJECT_DIR/app/code/DDTCoreX/DagsterBridge" name
+  [[ -d "$module" ]] || return 0
+  PARKED_DIR="$(mktemp -d "$SANDBOX_ROOT/.parked.XXXXXX")"
+  for name in "${BRIDGE_DEV_ARTIFACTS[@]}"; do
+    [[ -e "$module/$name" ]] && mv "$module/$name" "$PARKED_DIR/"
+  done
+  trap restore_bridge_dev_artifacts EXIT
+}
+
+restore_bridge_dev_artifacts() {
+  local module="$PROJECT_DIR/app/code/DDTCoreX/DagsterBridge" name
+  [[ -n "$PARKED_DIR" && -d "$PARKED_DIR" ]] || return 0
+  for name in "${BRIDGE_DEV_ARTIFACTS[@]}"; do
+    [[ -e "$PARKED_DIR/$name" ]] && mv "$PARKED_DIR/$name" "$module/"
+  done
+  rmdir "$PARKED_DIR" 2>/dev/null || true
+  PARKED_DIR=""
+}
+
 log() { printf '[sandbox] %s\n' "$*" >&2; }
 die() { printf '[sandbox] error: %s\n' "$*" >&2; exit 1; }
 
@@ -246,7 +273,10 @@ cmd_reset() {
   local stash=""
   if [[ -d "$PROJECT_DIR/app/code/DDTCoreX" ]]; then
     stash="$(mktemp -d)"
-    cp -a "$PROJECT_DIR/app/code/DDTCoreX" "$stash/"
+    # Dev leftovers (vendor, analysis caches) stay behind: hundreds of MB the
+    # fresh install never needs and that production compile cannot scan.
+    rsync -a --exclude=/DagsterBridge/vendor --exclude=.phpstan.cache --exclude=.phpunit.cache \
+      --exclude=.phpcs-cache "$PROJECT_DIR/app/code/DDTCoreX" "$stash/"
     log "keeping app/code/DDTCoreX across the reset at $stash"
   fi
 
@@ -292,6 +322,25 @@ cmd_bridge_off() {
   log "bridge module disabled"
 }
 
+cmd_deploy_mode() {
+  local mode="${1:-}"
+  case "$mode" in
+    developer|production) ;;
+    *) die "deploy-mode needs developer or production" ;;
+  esac
+  require_project_dir
+  # Switching to production compiles and deploys static content, which takes
+  # several minutes; back to developer is quick. The compile must not see the
+  # bridge checkout's dev leftovers, so they are parked and put back on exit.
+  [[ "$mode" == production ]] && park_bridge_dev_artifacts
+  ( cd "$PROJECT_DIR" && govard tool magento deploy:mode:set "$mode" ) >&2
+  ( cd "$PROJECT_DIR" && govard tool magento cache:flush ) >&2
+  local shown
+  shown="$( cd "$PROJECT_DIR" && govard tool magento deploy:mode:show )"
+  log "$shown"
+  printf 'deploy mode: %s\n' "$mode"
+}
+
 cmd_env() {
   [[ -f "$PASSWORD_FILE" ]] || die "no admin password found at $PASSWORD_FILE; run 'up' first"
   local password
@@ -314,10 +363,11 @@ main() {
     cron-run) cmd_cron_run "$@" ;;
     bridge) enable_bridge_module ;;
     bridge-off) cmd_bridge_off "$@" ;;
+    deploy-mode) cmd_deploy_mode "$@" ;;
     env) cmd_env "$@" ;;
     *)
       cat >&2 <<USAGE
-Usage: $(basename "$0") <up|down|reset|consumers|env|cron-run> [options]
+Usage: $(basename "$0") <up|down|reset|consumers|env|cron-run|deploy-mode> [options]
   up [--version V]     bootstrap a fresh Magento sandbox (default version $DEFAULT_VERSION)
   down                 stop containers, keep volumes
   reset [--version V]  down -v, then up again with a fresh database
@@ -325,6 +375,7 @@ Usage: $(basename "$0") <up|down|reset|consumers|env|cron-run> [options]
   cron-run             run bin/magento cron:run twice
   bridge               enable the optional bridge module checkout
   bridge-off           disable the bridge module, to prove the native fallback
+  deploy-mode <mode>   switch the sandbox to developer or production mode
   env                  print MAGENTO_BASE_URL / MAGENTO_ADMIN_USERNAME / MAGENTO_ADMIN_PASSWORD / MAGENTO_STORE_VIEW
 USAGE
       exit 1
