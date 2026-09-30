@@ -41,6 +41,32 @@ PASSWORD_FILE="$SANDBOX_ROOT/.admin-password"
 BRIDGE_DEV_ARTIFACTS=(vendor .phpstan.cache .phpunit.cache .phpcs-cache)
 PARKED_DIR=""
 
+# Where a reset keeps the bridge checkout while the project is rebuilt. A fixed
+# path, so a reset that died before restoring it leaves it findable, and the next
+# reset does not replace it with nothing.
+BRIDGE_STASH_DIR="$SANDBOX_ROOT/.bridge-stash"
+
+stash_bridge_checkout() {
+  local source="$PROJECT_DIR/app/code/DDTCoreX"
+  # No module in the project: an earlier reset died before restoring it, so
+  # the stash already holds the only copy. Keep it.
+  [[ -d "$source" ]] || return 0
+  rm -rf "$BRIDGE_STASH_DIR"
+  mkdir -p "$BRIDGE_STASH_DIR"
+  # Dev leftovers (vendor, analysis caches) stay behind: hundreds of MB the
+  # fresh install never needs and that production compile cannot scan.
+  rsync -a --exclude='DagsterBridge/vendor' --exclude=.phpstan.cache --exclude=.phpunit.cache \
+    --exclude=.phpcs-cache "$source" "$BRIDGE_STASH_DIR/"
+  log "keeping app/code/DDTCoreX across the reset at $BRIDGE_STASH_DIR"
+}
+
+restore_bridge_checkout() {
+  [[ -d "$BRIDGE_STASH_DIR/DDTCoreX" ]] || return 1
+  mkdir -p "$PROJECT_DIR/app/code"
+  cp -a "$BRIDGE_STASH_DIR/DDTCoreX" "$PROJECT_DIR/app/code/"
+  rm -rf "$BRIDGE_STASH_DIR"
+}
+
 park_bridge_dev_artifacts() {
   local module="$PROJECT_DIR/app/code/DDTCoreX/DagsterBridge" name
   [[ -d "$module" ]] || return 0
@@ -270,15 +296,9 @@ cmd_reset() {
   # A reset wipes the project directory, and the optional bridge module is a
   # git checkout that lives inside it: keep it aside so a reset does not throw
   # away unpushed work, then put it back and enable it on the fresh install.
-  local stash=""
-  if [[ -d "$PROJECT_DIR/app/code/DDTCoreX" ]]; then
-    stash="$(mktemp -d)"
-    # Dev leftovers (vendor, analysis caches) stay behind: hundreds of MB the
-    # fresh install never needs and that production compile cannot scan.
-    rsync -a --exclude=/DagsterBridge/vendor --exclude=.phpstan.cache --exclude=.phpunit.cache \
-      --exclude=.phpcs-cache "$PROJECT_DIR/app/code/DDTCoreX" "$stash/"
-    log "keeping app/code/DDTCoreX across the reset at $stash"
-  fi
+  # The stash survives a reset that dies half way (a Composer failure while
+  # provisioning, say) and is only removed once it has been restored.
+  stash_bridge_checkout
 
   if [[ -d "$PROJECT_DIR" ]]; then
     ( cd "$PROJECT_DIR" && govard down -v )
@@ -287,10 +307,7 @@ cmd_reset() {
   rm -f "$PASSWORD_FILE"
   cmd_up --version "$VERSION"
 
-  if [[ -n "$stash" ]]; then
-    mkdir -p "$PROJECT_DIR/app/code"
-    cp -a "$stash/DDTCoreX" "$PROJECT_DIR/app/code/"
-    rm -rf "$stash"
+  if restore_bridge_checkout; then
     enable_bridge_module
   fi
 }
@@ -383,4 +400,7 @@ USAGE
   esac
 }
 
-main "$@"
+# Sourced by the tests to reach the functions above without running a command.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

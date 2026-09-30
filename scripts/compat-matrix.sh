@@ -115,7 +115,14 @@ run_version() {
   log "=== $version: reset"
   if ! "$SCRIPT_DIR/sandbox.sh" reset --version "$version" > "$WORK/reset-$version.log" 2>&1; then
     PROVISIONED=0 STATUS="not provisioned"
-    REASON="reset failed: $(tail -n 3 "$WORK/reset-$version.log" | tr '\n' ' ' | cut -c1-300)"
+    if grep -q "affected by security advisories" "$WORK/reset-$version.log"; then
+      # govard's Magento bootstrap does not pass --no-security-blocking (its
+      # Laravel one does), so a release whose dependencies carry advisories
+      # cannot be installed at all.
+      REASON="Composer security blocking refused a dependency of $version and govard bootstrap cannot disable it"
+    else
+      REASON="reset failed: $(tail -n 3 "$WORK/reset-$version.log" | tr '\n' ' ' | cut -c1-300)"
+    fi
     return 0
   fi
 
