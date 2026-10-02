@@ -253,52 +253,76 @@ _SCOPE_PARAMETER_FIELDS = {
 
 def _find_failed_item(op: Operation, failed_items: list[dict]) -> int | None:
     for index, item in enumerate(failed_items):
-        if _item_names_operation(item.get("parameters"), op):
+        if _item_names_operation(item, op):
             return index
     return None
 
 
-def _item_names_operation(parameters, op: Operation) -> bool:
+_PLACEHOLDER = re.compile(r"%([A-Za-z_]\w*)")
+
+
+def _named_parameters(message: str, parameters) -> dict:
+    """The failed item's parameters as a name -> value dict.
+
+    Magento's price storage answers with a positional list whose order is the
+    order the message first names its placeholders ("Row ID: SKU = %SKU, Store
+    ID: %storeId." with ["X", "1"]; a placeholder that repeats takes one
+    value). The generic "Invalid attribute %fieldName = %fieldValue." form names
+    the field in its first value, so ["SKU", "X"] is also {"SKU": "X"}."""
+    if isinstance(parameters, dict):
+        named = dict(parameters)
+    elif isinstance(parameters, list):
+        names = list(dict.fromkeys(_PLACEHOLDER.findall(message)))
+        if not names:
+            # Numbered placeholders ("Not found: %1"): nothing says which value
+            # is the SKU, so every string value is a candidate, as before.
+            return {"sku": [value for value in parameters if isinstance(value, str)]}
+        named = dict(zip(names, parameters))
+    else:
+        return {}
+    field, value = named.get("fieldName"), named.get("fieldValue")
+    if isinstance(field, str) and value is not None:
+        named.setdefault(field, value)
+    return named
+
+
+def _item_names_operation(item: dict, op: Operation) -> bool:
     """Whether one failed item names this operation.
 
-    Only parameters that hold a SKU are compared to it (a dict key "sku" in
-    any case, or a string in a positional list), never price or quantity
-    values: a rejected price of 5 must not fail the row whose SKU is "5".
+    Only a parameter named SKU (any case) is compared to the operation's SKU,
+    never price or quantity values: a rejected price of 5 must not fail the
+    row whose SKU is "5". A store or source the item names must also match the
+    operation's own, so a failure for SKU X in store 1 leaves X in store 0 alone.
     """
+    parameters = _named_parameters(item.get("message", ""), item.get("parameters"))
     payload = op.payload if isinstance(op.payload, dict) else {}
     sku = payload.get("sku")
     candidates = {str(sku)} if sku is not None else {str(ref) for ref in op.row_refs}
 
-    if isinstance(parameters, dict):
-        named = [str(value) for key, value in parameters.items() if str(key).casefold() == "sku"]
-        if not any(value in candidates for value in named):
+    named = []
+    for key, value in parameters.items():
+        if str(key).casefold() != "sku":
+            continue
+        values = value if isinstance(value, list) else [value]
+        named.extend(str(item) for item in values)
+    if not any(value in candidates for value in named):
+        return False
+    for key, value in parameters.items():
+        field = _SCOPE_PARAMETER_FIELDS.get(str(key).casefold())
+        if field is not None and field in payload and str(payload[field]) != str(value):
             return False
-        for key, value in parameters.items():
-            field = _SCOPE_PARAMETER_FIELDS.get(str(key).casefold())
-            if field is not None and field in payload and str(payload[field]) != str(value):
-                return False
-        return True
-    if isinstance(parameters, list):
-        return any(isinstance(value, str) and value in candidates for value in parameters)
-    return False
+    return True
 
 
 def _fill_message(message: str, parameters) -> str:
-    # %name placeholders come from a dict, %1/%2/... from a list.
-    if isinstance(parameters, dict):
-        for key, value in parameters.items():
-            message = message.replace(f"%{key}", str(value))
-    elif isinstance(parameters, list):
-        # Magento's price storage answers a list ("Invalid attribute
-        # %fieldName = %fieldValue." with ["Price", "-5"]): numbered
-        # placeholders map by number, named ones by order of appearance.
-        if re.search(r"%\d", message):
-            for index, value in enumerate(parameters, start=1):
-                message = message.replace(f"%{index}", str(value))
-        else:
-            values = iter(parameters)
-            message = re.sub(r"%[A-Za-z_]\w*", lambda match: str(next(values, match.group(0))), message)
-    return message
+    # %name placeholders come from a dict or, in order, from a list; %1/%2/...
+    # always from a list.
+    if isinstance(parameters, list) and re.search(r"%\d", message):
+        for index, value in enumerate(parameters, start=1):
+            message = message.replace(f"%{index}", str(value))
+        return message
+    named = _named_parameters(message, parameters)
+    return _PLACEHOLDER.sub(lambda match: str(named.get(match.group(1), match.group(0))), message)
 
 
 def _execute_bulk(
