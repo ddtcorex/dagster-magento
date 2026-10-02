@@ -49,7 +49,7 @@ version.
   bootstrap cannot lift it. The library uses only standard REST endpoints, but
   there is no recorded run on that line.
 - 2.4.8-p5 failed one bulk test on its first run and passed all 15 on a rerun
-  the same day. The first run's log was lost, so that failure was not
+  two days later. The first run's log was lost, so that failure was not
   explained; both records are kept.
 - Rows list the Magento patch the run used, not a range: a newer patch is
   expected to behave the same but is unverified until the matrix is rerun.
@@ -380,13 +380,16 @@ them once and then only write quantities through `import_source_items`.
   carrying only the localized attributes, so a store view never gets
   overrides for price, status or anything else it did not ask for.
 - **Names:** category paths and attribute set names match existing ones
-  without regard to case, so `men/tops` finds `Men/Tops`, on every path and
-  with or without the bridge (Magento itself refuses a second attribute set that
-  differs only by case, and its category processor compares names the same way).
-  Two sibling categories that differ only by case therefore collapse to the
-  first one in tree order, with a warning; the library does not create such
-  siblings. New nodes keep the spelling the caller gave. Attribute group and
-  option labels follow their own rules.
+  without regard to case (lower-cased the way Magento's own category processor
+  does it, so `men/tops` finds `Men/Tops`, and `ß` is not folded to `ss`), with
+  or without the bridge. New nodes keep the spelling the caller gave. Two
+  sibling categories that differ only by case are not something the library
+  creates: on the native path it keeps the first one in tree order and warns;
+  with the bridge, Magento's processor decides which of them a path resolves to
+  and logs nothing, so avoid such siblings if the choice matters. Attribute set
+  names follow the database collation, which also ignores accents by default,
+  so a set differing from another only by an accent is refused by Magento.
+  Attribute group and option labels follow their own rules.
 - **Diff:** every importer except the plan-only ones takes a snapshot first
   and reports `skipped_unchanged` for rows that already match. Pass
   `diff=False` to rewrite everything.
@@ -620,8 +623,8 @@ and both were read back through REST afterwards, and path A reported 10,000 of
   stays unset on 2.4.6.
 - On Magento 2.4.6 an async bulk operation whose product has no SKU raises a
   `TypeError` that the consumer does not catch: the consumer process exits and
-  the operation stays open (observed on 2.4.6-p15; 2.4.8 and 2.4.9 answer a
-  normal failure). The library never sends such an item, because `sku` is
+  the operation stays open (observed on 2.4.6-p15; 2.4.9 answers a normal
+  failure). The library never sends such an item, because `sku` is
   required by the row model, but a hand written bulk can. Check that all
   `async.operations.all` consumers are still running if a bulk stays open.
 - No hard delete anywhere.

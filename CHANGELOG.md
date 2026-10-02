@@ -15,9 +15,10 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
   refuses to create an attribute set whose name differs from an existing one
   only by case, so the old exact match made the same file import differently
   with and without the bridge and tried to create sets that cannot exist.
-  Behaviour change: two sibling categories that differ only by case now
-  collapse to the first one in tree order, with a warning. New categories keep
-  the caller's spelling.
+  Behaviour change: on the native path two sibling categories that differ only
+  by case now collapse to the first one in tree order, with a warning (the bridge
+  leaves that choice to Magento's processor). New categories keep the caller's
+  spelling, and names are lower-cased, not case-folded, like the bridge.
 
 ### Added
 

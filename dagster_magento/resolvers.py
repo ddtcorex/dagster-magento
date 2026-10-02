@@ -179,7 +179,7 @@ class Resolver:
         name = name.strip()
         if not self._attribute_sets:
             self._load_attribute_sets()
-        key = name.casefold()
+        key = name.lower()
         if key not in self._attribute_sets:
             raise ResolveError(f"unknown attribute set: {name}")
         return self._attribute_sets[key]
@@ -191,10 +191,10 @@ class Resolver:
         }
         response = self.resource.get("eav/attribute-sets/list", params=params)
         for item in response.get("items", []):
-            # Keyed by the casefolded name: Magento refuses a second set that
+            # Keyed by the lower-cased name: Magento refuses a second set that
             # differs only by case ("attribute set name already exists",
             # verified live on 2.4.9), so such a name is the same set.
-            self._attribute_sets[item["attribute_set_name"].strip().casefold()] = item["attribute_set_id"]
+            self._attribute_sets[item["attribute_set_name"].strip().lower()] = item["attribute_set_id"]
 
     def attribute_group_id(self, set_id: int, name: str) -> int | None:
         """Look up a group's id within one attribute set by exact name
@@ -288,13 +288,13 @@ class Resolver:
         segments = self._split_segments(path)
         root_segments = self._split_segments(self.root_category)
         head = segments[: len(root_segments)]
-        if [segment.casefold() for segment in head] == [segment.casefold() for segment in root_segments]:
+        if [segment.lower() for segment in head] == [segment.lower() for segment in root_segments]:
             return segments
         return root_segments + segments
 
     @staticmethod
     def _key_of(segments: list[str]) -> str:
-        return "/".join(segments).casefold()
+        return "/".join(segments).lower()
 
     def _category_key(self, path: str) -> str:
         return self._key_of(self._path_segments(path))
@@ -306,7 +306,7 @@ class Resolver:
         # or a path segment can carry stray whitespace) and drop any
         # segment left empty by a doubled separator, so
         # "Default Category//  Men  /Tops" and "Default Category/Men/Tops"
-        # key on the same cache entry. Keys are casefolded (Magento's own
+        # key on the same cache entry. Keys are lower-cased (Magento's own
         # category processor compares names without regard to case), so
         # "Men" and "men" are one category on every path.
         return [segment.strip() for segment in path.split("/") if segment.strip()]
@@ -324,7 +324,7 @@ class Resolver:
     def _walk_category_tree(self, node: dict, prefix: str) -> None:
         name = node["name"].strip()
         path = f"{prefix}/{name}" if prefix else name
-        key = path.casefold()
+        key = path.lower()
         if key in self._categories:
             # Magento allows siblings that differ only by case; this library
             # does not, so the first one in tree order stays the target.
@@ -350,15 +350,15 @@ class Resolver:
         built = ""
         for segment in segments:
             built = f"{built}/{segment}" if built else segment
-            if built.casefold() in self._categories:
-                parent_id = self._categories[built.casefold()]
+            if built.lower() in self._categories:
+                parent_id = self._categories[built.lower()]
                 continue
             if parent_id is None:
                 # The configured root itself is missing from the tree -
                 # ensure_categories cannot fix that by creating a second root.
                 raise ResolveError(f"root category '{segments[0]}' not found in the category tree")
             parent_id = self._create_category(segment, parent_id)
-            self._categories[built.casefold()] = parent_id
+            self._categories[built.lower()] = parent_id
         return parent_id
 
     def _create_category(self, name: str, parent_id: int) -> int:

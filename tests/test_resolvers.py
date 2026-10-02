@@ -607,13 +607,18 @@ def test_root_prefix_differing_by_case_does_not_create_a_second_root():
     assert posts[0].json()["category"]["name"] == "Tops"
 
 
-def test_casefold_not_lower():
+def test_names_fold_like_the_bridge_so_a_sharp_s_is_not_ss():
+    """The bridge goes through Magento's CategoryProcessor, which lower-cases with
+    mb_strtolower ('Straße' stays 'straße'). A fold that turned ß into ss would
+    resolve a name natively that the bridge would create again."""
     resolver = Resolver(make_resource())
     with requests_mock.Mocker() as m:
         mock_token(m)
         m.get("https://shop.test/rest/all/V1/categories", json=_category_tree(_node(10, "Straße")))
 
-        assert resolver.category_id("Default Category/STRASSE") == 10
+        assert resolver.category_id("Default Category/STRAßE") == 10
+        with pytest.raises(ResolveError):
+            resolver.category_id("Default Category/STRASSE")
 
 
 def test_sibling_categories_differing_by_case_first_in_tree_wins_with_warning(caplog):
