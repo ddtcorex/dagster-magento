@@ -92,7 +92,7 @@ PY
 
 # Full pytest output survives the run (WORK is removed on exit): a failing
 # version is diagnosed from its log, not from the JSON record alone.
-LOG_DIR="${TMPDIR:-/tmp}/dagster-compat-logs"
+LOG_DIR="$REPO_ROOT/sandbox/compat-logs"
 mkdir -p "$LOG_DIR"
 
 # Restores govard's shared proxy while the suite runs: other govard sessions on
