@@ -73,3 +73,23 @@ def test_restore_without_a_stash_is_a_no_op(tmp_path):
     completed = _sh(tmp_path, "restore_bridge_checkout || echo rc=$?")
 
     assert "rc=1" in completed.stdout
+
+
+def test_a_failed_copy_keeps_the_only_copy_of_the_module(tmp_path):
+    """restore_bridge_checkout runs as an `if` condition, where bash ignores
+    `set -e`: a failing copy must still stop it before the stash is removed."""
+    project = tmp_path / "dagster-magento-sandbox"
+    _module(project)
+    _sh(tmp_path, "stash_bridge_checkout")
+    subprocess.run(["rm", "-rf", str(project)], check=True)
+    project.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    cp = fake_bin / "cp"
+    cp.write_text("#!/bin/sh\nexit 1\n")
+    cp.chmod(0o755)
+
+    completed = _sh(tmp_path, f'PATH="{fake_bin}:$PATH"; if restore_bridge_checkout; then echo restored; else echo failed; fi')
+
+    assert "failed" in completed.stdout and "restored" not in completed.stdout
+    assert (tmp_path / ".bridge-stash" / "DDTCoreX" / "DagsterBridge" / "registration.php").exists()

@@ -62,8 +62,11 @@ stash_bridge_checkout() {
 
 restore_bridge_checkout() {
   [[ -d "$BRIDGE_STASH_DIR/DDTCoreX" ]] || return 1
-  mkdir -p "$PROJECT_DIR/app/code"
-  cp -a "$BRIDGE_STASH_DIR/DDTCoreX" "$PROJECT_DIR/app/code/"
+  # This runs as an `if` condition, where bash ignores `set -e`: every step
+  # that can fail returns explicitly, so the stash (the only copy once the
+  # project was removed) is never deleted after a failed copy.
+  mkdir -p "$PROJECT_DIR/app/code" || return 1
+  cp -a "$BRIDGE_STASH_DIR/DDTCoreX" "$PROJECT_DIR/app/code/" || return 1
   rm -rf "$BRIDGE_STASH_DIR"
 }
 
