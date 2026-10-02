@@ -69,3 +69,27 @@ def test_any_other_failure_reading_the_bridge_is_unknown_not_not_installed(monke
         raise _http_error(401)
 
     assert _facts_with_bridge(monkeypatch, tmp_path, get)["bridge"] == "unknown (HTTP 401)"
+
+
+def test_a_rejected_credential_is_an_unknown_bridge_not_a_crash(monkeypatch, tmp_path):
+    """A stale admin password fails in the token fetch with MagentoAuthError, not
+    HTTPError: the record must keep every other fact and say the bridge is
+    unknown instead of losing the whole fact set."""
+    from dagster_magento.resource import MagentoAuthError
+
+    def get(endpoint):
+        raise MagentoAuthError("bad credentials")
+
+    facts = _facts_with_bridge(monkeypatch, tmp_path, get)
+
+    assert facts["bridge"] == "unknown (authentication failed)"
+    assert facts["magento"] == "2.4.9"
+
+
+def test_an_unreachable_store_is_an_unknown_bridge(monkeypatch, tmp_path):
+    import requests
+
+    def get(endpoint):
+        raise requests.exceptions.ConnectionError("no route")
+
+    assert _facts_with_bridge(monkeypatch, tmp_path, get)["bridge"] == "unknown (connection failed)"

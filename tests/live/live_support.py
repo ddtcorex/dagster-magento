@@ -16,6 +16,7 @@ import pytest
 import requests
 
 from dagster_magento import MagentoResource
+from dagster_magento.resource import MagentoAuthError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SANDBOX_SCRIPT = REPO_ROOT / "scripts" / "sandbox.sh"
@@ -266,6 +267,12 @@ def sandbox_facts() -> dict:
         # credential, a 5xx) is an unknown, never a claim about the store.
         status = error.response.status_code if error.response is not None else None
         bridge = "not installed" if status == 404 else f"unknown (HTTP {status})"
+    except MagentoAuthError:
+        # A stale admin password (the suite resets the sandbox) fails in the
+        # token fetch, not in the request: keep the other facts.
+        bridge = "unknown (authentication failed)"
+    except requests.exceptions.ConnectionError:
+        bridge = "unknown (connection failed)"
     return {
         "magento": raw["magento"],
         "php": raw["php"],
