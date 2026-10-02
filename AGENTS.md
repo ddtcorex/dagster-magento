@@ -242,8 +242,12 @@ consecutive-failure circuit breaker if it ever bites a real consumer.
 No PyPI, no registry: `pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@vX.Y.Z"`.
 
 1. Update `CHANGELOG.md` and bump `version` in `pyproject.toml`.
-2. `.venv/bin/pytest -q`, `.venv/bin/pytest -m samples -q` and, when the
-   sandbox is up, `-m live` must be green.
+2. `.venv/bin/pytest -q` and `.venv/bin/pytest -m samples -q` must be green.
+   Run `scripts/compat-matrix.sh --write` and commit the new `compat/results/`
+   records and the regenerated README table: a release never states a Magento
+   line that has no current row. The matrix owns the sandbox for about an
+   hour and a half; do not run other live work meanwhile, and keep other
+   govard sessions off the machine.
 3. Commit, then `git tag vX.Y.Z` and `git push origin master vX.Y.Z` after
    approval.
 4. Verify the README install command from a clean environment before calling
