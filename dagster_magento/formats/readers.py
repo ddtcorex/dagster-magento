@@ -46,7 +46,21 @@ def _read_json_rows(path: Path) -> Iterator[tuple[int, dict]]:
     if not isinstance(data, list):
         raise ValueError(f"{path}: expected a top-level json list of objects")
     for index, row in enumerate(data, start=1):
-        yield index, dict(row)
+        yield index, {key: _json_cell_str(value) for key, value in dict(row).items()}
+
+
+def _json_cell_str(value) -> str:
+    """Read a json value as the text a csv cell would hold, so the mappers
+    only ever see strings. Booleans become 1 and 0, nested values their json."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, dict)):
+        return json.dumps(value)
+    return _xlsx_cell_str(value)
 
 
 def _read_xlsx_rows(path: Path) -> Iterator[tuple[int, dict]]:
