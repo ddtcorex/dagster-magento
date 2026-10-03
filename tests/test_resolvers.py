@@ -376,7 +376,7 @@ def test_website_id_and_store_id_resolve_by_code():
         resolver.store_id("does-not-exist")
 
 
-def test_attribute_set_id_resolves_by_exact_name():
+def test_attribute_set_id_resolves_by_name():
     resource = make_resource()
     resolver = Resolver(resource)
     with requests_mock.Mocker() as m:
@@ -560,3 +560,94 @@ def test_refresh_attribute_sets_clears_caches():
     ]
     assert len(set_requests) == 2  # re-fetched once after refresh_attribute_sets
     assert len(group_requests) == 2  # group cache cleared alongside the set cache
+
+
+def _category_tree(*children):
+    return {
+        "id": 1,
+        "parent_id": 0,
+        "name": "Root Catalog",
+        "children_data": [{"id": 2, "parent_id": 1, "name": "Default Category", "children_data": list(children)}],
+    }
+
+
+def _node(node_id, name, *children):
+    return {"id": node_id, "parent_id": 2, "name": name, "children_data": list(children)}
+
+
+def _category_posts(m):
+    return [r for r in m.request_history if r.method == "POST" and r.path.endswith("/categories")]
+
+
+def test_category_lookup_ignores_case():
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get("https://shop.test/rest/all/V1/categories", json=_category_tree(_node(10, "Men")))
+
+        assert resolver.category_id("default category/MEN") == 10
+        result = resolver.ensure_categories(["Default Category/men"])
+
+    assert result == {"Default Category/men": 10}
+    assert _category_posts(m) == []
+
+
+def test_root_prefix_differing_by_case_does_not_create_a_second_root():
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get("https://shop.test/rest/all/V1/categories", json=_category_tree(_node(10, "Men")))
+        m.post("https://shop.test/rest/all/V1/categories", json={"id": 20, "parent_id": 10, "name": "Tops"})
+
+        resolver.ensure_categories(["default category/Men/Tops"])
+
+    posts = _category_posts(m)
+    assert len(posts) == 1
+    assert posts[0].json()["category"]["parent_id"] == 10
+    assert posts[0].json()["category"]["name"] == "Tops"
+
+
+def test_names_fold_like_the_bridge_so_a_sharp_s_is_not_ss():
+    """The bridge goes through Magento's CategoryProcessor, which lower-cases with
+    mb_strtolower ('Straße' stays 'straße'). A fold that turned ß into ss would
+    resolve a name natively that the bridge would create again."""
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get("https://shop.test/rest/all/V1/categories", json=_category_tree(_node(10, "Straße")))
+
+        assert resolver.category_id("Default Category/STRAßE") == 10
+        with pytest.raises(ResolveError):
+            resolver.category_id("Default Category/STRASSE")
+
+
+def test_sibling_categories_differing_by_case_first_in_tree_wins_with_warning(caplog):
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/categories",
+            json=_category_tree(_node(10, "Men"), _node(11, "men")),
+        )
+        with caplog.at_level("WARNING"):
+            found = resolver.category_id("Default Category/MEN")
+
+    assert found == 10
+    warning = " ".join(record.getMessage() for record in caplog.records)
+    assert "Men" in warning and "men" in warning
+
+
+def test_attribute_set_lookup_ignores_case_like_magento_uniqueness():
+    """Verified live on 2.4.9: creating 'caseset' next to 'CaseSet' is refused
+    with 'attribute set name already exists', so a name that differs only by
+    case is the same set and must resolve instead of being created again."""
+    resolver = Resolver(make_resource())
+    with requests_mock.Mocker() as m:
+        mock_token(m)
+        m.get(
+            "https://shop.test/rest/all/V1/eav/attribute-sets/list",
+            json={"items": [{"attribute_set_id": 4, "attribute_set_name": "Default"}], "total_count": 1},
+        )
+
+        assert resolver.attribute_set_id("default") == 4
+        assert resolver.attribute_set_id("  DEFAULT ") == 4

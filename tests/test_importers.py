@@ -325,6 +325,20 @@ def test_attribute_sets_converge_in_passes():
     ]
 
 
+def test_attribute_set_named_with_different_case_is_reused_not_created():
+    """Magento refuses a second set whose name differs only by case, so an
+    existing 'Apparel' must satisfy a row named 'apparel'."""
+    apparel = {"attribute_set_name": "Apparel", "attribute_set_id": 10}
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="token")
+        m.get(f"{BASE}/eav/attribute-sets/list", json={"items": [apparel]})
+        m.get(f"{BASE}/products/attribute-sets/groups/list", json={"items": []})
+        result = import_attribute_sets(make_resource(), [{"name": "apparel"}])
+
+    assert result.failed == 0
+    assert [r.url for r in writes(m) if r.url.endswith("/products/attribute-sets")] == []
+
+
 def test_auth_error_propagates_from_importer():
     rows = [{"source_code": "eu", "name": "EU", "country_id": "FR", "postcode": "75001"}]
     with requests_mock.Mocker() as m:
@@ -638,3 +652,19 @@ def test_rejected_price_without_a_sku_is_never_reported_succeeded():
 
     assert result.succeeded == 0
     assert result.failed == 2
+
+
+def test_import_categories_reuses_a_category_that_differs_only_by_case():
+    from dagster_magento.importers import import_categories
+    from dagster_magento.models import CategoryRow
+
+    row = CategoryRow(path="default category/men", attributes={"description": "Men"})
+    with requests_mock.Mocker() as m:
+        _mock_category_tree(m)
+        m.put(f"{BASE}/categories/5", json={"id": 5})
+
+        result = import_categories(make_resource(), [row])
+
+    assert result.failed == 0
+    assert [r for r in m.request_history if r.method == "POST" and r.url.endswith("/categories")] == []
+    assert len(_put_bodies(m, 5)) == 1

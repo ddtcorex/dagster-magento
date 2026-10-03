@@ -1,0 +1,43 @@
+{
+  "body": {
+    "bulk_id": "92c4131a-0ad6-4670-a009-d6e7f56ac57a",
+    "description": "Topic async.magento.catalog.api.productrepositoryinterface.save.post",
+    "operation_count": 3,
+    "operations_list": [
+      {
+        "bulk_uuid": "92c4131a-0ad6-4670-a009-d6e7f56ac57a",
+        "error_code": null,
+        "id": 0,
+        "result_message": "Service execution success Magento\\Catalog\\Model\\ProductRepository\\Interceptor::save",
+        "result_serialized_data": null,
+        "serialized_data": null,
+        "status": 1,
+        "topic_name": "async.magento.catalog.api.productrepositoryinterface.save.post"
+      },
+      {
+        "bulk_uuid": "92c4131a-0ad6-4670-a009-d6e7f56ac57a",
+        "error_code": null,
+        "id": 2,
+        "result_message": "Service execution success Magento\\Catalog\\Model\\ProductRepository\\Interceptor::save",
+        "result_serialized_data": null,
+        "serialized_data": null,
+        "status": 1,
+        "topic_name": "async.magento.catalog.api.productrepositoryinterface.save.post"
+      },
+      {
+        "bulk_uuid": "92c4131a-0ad6-4670-a009-d6e7f56ac57a",
+        "error_code": 0,
+        "id": 1,
+        "result_message": "The \"sku\" attribute value is empty. Set the attribute and try again.",
+        "result_serialized_data": null,
+        "serialized_data": "{\"entity_id\":null,\"entity_link\":\"\",\"meta_information\":\"{\\\"product\\\":{\\\"sku\\\":null,\\\"status\\\":1,\\\"product_links\\\":[],\\\"tier_prices\\\":[]},\\\"saveOptions\\\":false}\",\"store_id\":\"0\"}",
+        "status": 3,
+        "topic_name": "async.magento.catalog.api.productrepositoryinterface.save.post"
+      }
+    ],
+    "start_time": "2026-09-30 08:53:42",
+    "user_id": 2,
+    "user_type": 2
+  },
+  "status": 200
+}

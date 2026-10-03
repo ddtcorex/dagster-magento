@@ -97,6 +97,7 @@ class Resolver:
         self._websites: dict[str, int] = {}
         self._stores: dict[str, int] = {}
         self._categories: dict[str, int] = {}
+        self._category_spellings: dict[str, str] = {}
 
     # -- attributes and options ------------------------------------------------
 
@@ -178,9 +179,10 @@ class Resolver:
         name = name.strip()
         if not self._attribute_sets:
             self._load_attribute_sets()
-        if name not in self._attribute_sets:
+        key = name.lower()
+        if key not in self._attribute_sets:
             raise ResolveError(f"unknown attribute set: {name}")
-        return self._attribute_sets[name]
+        return self._attribute_sets[key]
 
     def _load_attribute_sets(self) -> None:
         params = {
@@ -189,9 +191,10 @@ class Resolver:
         }
         response = self.resource.get("eav/attribute-sets/list", params=params)
         for item in response.get("items", []):
-            # Exact, case-sensitive match after strip() - Magento allows
-            # sibling sets differing only in case.
-            self._attribute_sets[item["attribute_set_name"].strip()] = item["attribute_set_id"]
+            # Keyed by the lower-cased name: Magento refuses a second set that
+            # differs only by case ("attribute set name already exists",
+            # verified live on 2.4.9), so such a name is the same set.
+            self._attribute_sets[item["attribute_set_name"].strip().lower()] = item["attribute_set_id"]
 
     def attribute_group_id(self, set_id: int, name: str) -> int | None:
         """Look up a group's id within one attribute set by exact name
@@ -262,7 +265,7 @@ class Resolver:
                 # Keep the cache the same shape the native path maintains, so
                 # a later category_id() lookup answers without another call.
                 for path, category_id in resolved.items():
-                    self._categories[self._normalize_category_path(path)] = category_id
+                    self._categories[self._category_key(path)] = category_id
                 return resolved
 
         if not self._categories:
@@ -272,17 +275,29 @@ class Resolver:
     def category_id(self, path: str) -> int:
         if not self._categories:
             self._load_category_tree()
-        normalized = self._normalize_category_path(path)
-        if normalized not in self._categories:
+        key = self._category_key(path)
+        if key not in self._categories:
             raise ResolveError(f"unknown category path: {path}")
-        return self._categories[normalized]
+        return self._categories[key]
 
-    def _normalize_category_path(self, path: str) -> str:
+    def _path_segments(self, path: str) -> list[str]:
+        """The path's stripped segments, prefixed with the configured root
+        unless the path already starts with it (compared without regard to
+        case). Segments keep the caller's spelling: it is what a newly
+        created category is named."""
         segments = self._split_segments(path)
         root_segments = self._split_segments(self.root_category)
-        if segments[: len(root_segments)] == root_segments:
-            return "/".join(segments)
-        return "/".join(root_segments + segments)
+        head = segments[: len(root_segments)]
+        if [segment.lower() for segment in head] == [segment.lower() for segment in root_segments]:
+            return segments
+        return root_segments + segments
+
+    @staticmethod
+    def _key_of(segments: list[str]) -> str:
+        return "/".join(segments).lower()
+
+    def _category_key(self, path: str) -> str:
+        return self._key_of(self._path_segments(path))
 
     @staticmethod
     def _split_segments(path: str) -> list[str]:
@@ -291,7 +306,9 @@ class Resolver:
         # or a path segment can carry stray whitespace) and drop any
         # segment left empty by a doubled separator, so
         # "Default Category//  Men  /Tops" and "Default Category/Men/Tops"
-        # key on the same cache entry. Matching stays case-sensitive.
+        # key on the same cache entry. Keys are lower-cased (Magento's own
+        # category processor compares names without regard to case), so
+        # "Men" and "men" are one category on every path.
         return [segment.strip() for segment in path.split("/") if segment.strip()]
 
     def _load_category_tree(self) -> None:
@@ -300,37 +317,48 @@ class Resolver:
         # such as "Default Category".
         tree = self.resource.get("categories", params={"depth": self.CATEGORY_TREE_DEPTH})
         self._categories = {}
+        self._category_spellings = {}
         for child in tree.get("children_data", []):
             self._walk_category_tree(child, prefix="")
 
     def _walk_category_tree(self, node: dict, prefix: str) -> None:
         name = node["name"].strip()
         path = f"{prefix}/{name}" if prefix else name
-        self._categories[path] = node["id"]
+        key = path.lower()
+        if key in self._categories:
+            # Magento allows siblings that differ only by case; this library
+            # does not, so the first one in tree order stays the target.
+            logger.warning(
+                f"category '{path}' differs only by case from '{self._category_spellings[key]}'; "
+                f"keeping id {self._categories[key]} and ignoring id {node['id']}"
+            )
+        else:
+            self._categories[key] = node["id"]
+            self._category_spellings[key] = path
         for child in node.get("children_data", []):
             self._walk_category_tree(child, path)
 
     def _ensure_category_path(self, path: str) -> int:
-        normalized = self._normalize_category_path(path)
-        if normalized in self._categories:
-            return self._categories[normalized]
+        segments = self._path_segments(path)
+        key = self._key_of(segments)
+        if key in self._categories:
+            return self._categories[key]
 
-        # normalized is built from _split_segments() above, so every
-        # segment here is already stripped and non-empty.
-        segments = normalized.split("/")
+        # segments come from _split_segments() above, so every one is
+        # already stripped and non-empty.
         parent_id = None
         built = ""
         for segment in segments:
             built = f"{built}/{segment}" if built else segment
-            if built in self._categories:
-                parent_id = self._categories[built]
+            if built.lower() in self._categories:
+                parent_id = self._categories[built.lower()]
                 continue
             if parent_id is None:
                 # The configured root itself is missing from the tree -
                 # ensure_categories cannot fix that by creating a second root.
                 raise ResolveError(f"root category '{segments[0]}' not found in the category tree")
             parent_id = self._create_category(segment, parent_id)
-            self._categories[built] = parent_id
+            self._categories[built.lower()] = parent_id
         return parent_id
 
     def _create_category(self, name: str, parent_id: int) -> int:

@@ -5,6 +5,57 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-02
+
+### Changed
+
+- Category paths and attribute set names now match existing ones without
+  regard to case, with the bridge on or off. Magento's own category
+  processor (which the bridge reuses) compares names that way, and Magento
+  refuses to create an attribute set whose name differs from an existing one
+  only by case, so the old exact match made the same file import differently
+  with and without the bridge and tried to create sets that cannot exist.
+  Behaviour change: on the native path two sibling categories that differ only
+  by case now collapse to the first one in tree order, with a warning (the bridge
+  leaves that choice to Magento's processor). New categories keep the caller's
+  spelling, and names are lower-cased, not case-folded, like the bridge.
+
+### Added
+
+- `scripts/compat-matrix.sh`: resets the sandbox to each supported Magento
+  line (2.4.6-p15, 2.4.7-p10, 2.4.8-p5, 2.4.9), runs the live suite, and writes
+  one JSON record per version under `compat/results/`; the README
+  compatibility table is generated from them. It restores govard's shared
+  proxy when another session removes it mid run and retries that version once.
+- `scripts/sandbox.sh deploy-mode <developer|production>`.
+- Live probes that record real Magento response shapes as scrubbed fixtures
+  (`tests/fixtures/magento/`): a bulk rejected whole when one item is
+  malformed, a per operation consumer failure, price storage failed items,
+  and production mode error bodies. Hermetic tests read the fixtures.
+- `PriceRow` rejects a special price range whose end precedes its start;
+  Magento stores such a range and reports success.
+
+### Fixed
+
+- Failed price storage items fill their named placeholders ("Invalid
+  attribute Price = -5.") instead of leaving `%fieldName` in every row error,
+  and Magento's `trace` key is dropped from the response body copied into
+  a row message.
+- `scripts/sandbox.sh reset` no longer loses the bridge checkout when
+  provisioning fails half way: the stash lives at a fixed path and is kept
+  until it has been restored.
+- A bridge checkout's `vendor/` and PHPStan cache no longer break
+  `setup:di:compile`, which blocked production mode.
+
+### Verified
+
+- Live suite 15 of 15 on 2.4.6-p15, 2.4.8-p5 and 2.4.9 on the final code. The
+  bulk catalog test failed intermittently on 2.4.6-p15 (twice in one run) and
+  once on 2.4.8-p5 before passing on reruns, unexplained; 2.4.9 never failed.
+  2.4.7 is not verified because it cannot be installed through govard. See
+  "Compatibility" in the README for the exact patches, PHP and database
+  versions.
+
 ## [0.3.1] - 2026-09-30
 
 ### Fixed

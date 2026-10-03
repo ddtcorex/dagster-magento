@@ -7,6 +7,7 @@ only knows how to send an already-built Operation and interpret the
 response, not how a row became one.
 """
 
+import re
 from typing import Literal
 
 import requests
@@ -14,7 +15,7 @@ from dagster import get_dagster_logger
 
 from dagster_magento.bulk import STATUS_COMPLETE, STATUS_OPEN, STATUS_RETRIABLY_FAILED, wait_bulk
 from dagster_magento.operation import Operation
-from dagster_magento.upload import UploadResult, chunk_rows
+from dagster_magento.upload import UploadResult, chunk_rows, http_error_details
 
 # Production defaults from the design spec: list endpoints (prices, source
 # items, ...) chunk larger than bulk submissions do.
@@ -111,13 +112,6 @@ def _dispatch(resource, method: str, endpoint: str, payload, store_code):
     return resource.post(endpoint, payload, store_code=store_code)
 
 
-def _http_error_details(error: requests.exceptions.HTTPError) -> tuple[int | None, str]:
-    status_code = error.response.status_code if error.response is not None else None
-    response_body = error.response.text[:1000] if error.response is not None else ""
-    message = f"{error} - response body: {response_body}" if response_body else str(error)
-    return status_code, message
-
-
 def _phase(op: Operation) -> int:
     return op.bulk.phase if op.bulk is not None else 0
 
@@ -166,7 +160,7 @@ def _send_single(resource, op: Operation, logger) -> UploadResult:
     try:
         _dispatch(resource, op.method, op.endpoint, op.payload, op.store_code)
     except requests.exceptions.HTTPError as error:
-        status_code, message = _http_error_details(error)
+        status_code, message = http_error_details(error)
         logger.warning(f"{op.endpoint}: row(s) {op.row_refs} failed: {message}")
         return UploadResult(
             succeeded=0,
@@ -191,7 +185,7 @@ def _send_list_chunk(resource, method, endpoint, store_code, list_key, chunk, lo
     try:
         response = _dispatch(resource, method, endpoint, payload, store_code)
     except requests.exceptions.HTTPError as error:
-        status_code, message = _http_error_details(error)
+        status_code, message = http_error_details(error)
         row_ids = [ref for op in chunk for ref in op.row_refs]
         logger.warning(f"{endpoint}: chunk of {len(chunk)} operation(s) failed: {message}")
         return UploadResult(
@@ -259,45 +253,76 @@ _SCOPE_PARAMETER_FIELDS = {
 
 def _find_failed_item(op: Operation, failed_items: list[dict]) -> int | None:
     for index, item in enumerate(failed_items):
-        if _item_names_operation(item.get("parameters"), op):
+        if _item_names_operation(item, op):
             return index
     return None
 
 
-def _item_names_operation(parameters, op: Operation) -> bool:
+_PLACEHOLDER = re.compile(r"%([A-Za-z_]\w*)")
+
+
+def _named_parameters(message: str, parameters) -> dict:
+    """The failed item's parameters as a name -> value dict.
+
+    Magento's price storage answers with a positional list whose order is the
+    order the message first names its placeholders ("Row ID: SKU = %SKU, Store
+    ID: %storeId." with ["X", "1"]; a placeholder that repeats takes one
+    value). The generic "Invalid attribute %fieldName = %fieldValue." form names
+    the field in its first value, so ["SKU", "X"] is also {"SKU": "X"}."""
+    if isinstance(parameters, dict):
+        named = dict(parameters)
+    elif isinstance(parameters, list):
+        names = list(dict.fromkeys(_PLACEHOLDER.findall(message)))
+        if not names:
+            # Numbered placeholders ("Not found: %1"): nothing says which value
+            # is the SKU, so every string value is a candidate, as before.
+            return {"sku": [value for value in parameters if isinstance(value, str)]}
+        named = dict(zip(names, parameters))
+    else:
+        return {}
+    field, value = named.get("fieldName"), named.get("fieldValue")
+    if isinstance(field, str) and value is not None:
+        named.setdefault(field, value)
+    return named
+
+
+def _item_names_operation(item: dict, op: Operation) -> bool:
     """Whether one failed item names this operation.
 
-    Only parameters that hold a SKU are compared to it (a dict key "sku" in
-    any case, or a string in a positional list), never price or quantity
-    values: a rejected price of 5 must not fail the row whose SKU is "5".
+    Only a parameter named SKU (any case) is compared to the operation's SKU,
+    never price or quantity values: a rejected price of 5 must not fail the
+    row whose SKU is "5". A store or source the item names must also match the
+    operation's own, so a failure for SKU X in store 1 leaves X in store 0 alone.
     """
+    parameters = _named_parameters(item.get("message", ""), item.get("parameters"))
     payload = op.payload if isinstance(op.payload, dict) else {}
     sku = payload.get("sku")
     candidates = {str(sku)} if sku is not None else {str(ref) for ref in op.row_refs}
 
-    if isinstance(parameters, dict):
-        named = [str(value) for key, value in parameters.items() if str(key).casefold() == "sku"]
-        if not any(value in candidates for value in named):
+    named = []
+    for key, value in parameters.items():
+        if str(key).casefold() != "sku":
+            continue
+        values = value if isinstance(value, list) else [value]
+        named.extend(str(item) for item in values)
+    if not any(value in candidates for value in named):
+        return False
+    for key, value in parameters.items():
+        field = _SCOPE_PARAMETER_FIELDS.get(str(key).casefold())
+        if field is not None and field in payload and str(payload[field]) != str(value):
             return False
-        for key, value in parameters.items():
-            field = _SCOPE_PARAMETER_FIELDS.get(str(key).casefold())
-            if field is not None and field in payload and str(payload[field]) != str(value):
-                return False
-        return True
-    if isinstance(parameters, list):
-        return any(isinstance(value, str) and value in candidates for value in parameters)
-    return False
+    return True
 
 
 def _fill_message(message: str, parameters) -> str:
-    # %name placeholders come from a dict, %1/%2/... from a list.
-    if isinstance(parameters, dict):
-        for key, value in parameters.items():
-            message = message.replace(f"%{key}", str(value))
-    elif isinstance(parameters, list):
+    # %name placeholders come from a dict or, in order, from a list; %1/%2/...
+    # always from a list.
+    if isinstance(parameters, list) and re.search(r"%\d", message):
         for index, value in enumerate(parameters, start=1):
             message = message.replace(f"%{index}", str(value))
-    return message
+        return message
+    named = _named_parameters(message, parameters)
+    return _PLACEHOLDER.sub(lambda match: str(named.get(match.group(1), match.group(0))), message)
 
 
 def _execute_bulk(
@@ -363,7 +388,7 @@ def _process_bulk_chunk(
         # aborts. Magento answers a partial rejection with 400 too, after it
         # scheduled the accepted items: when the body carries the bulk uuid,
         # those are still polled below and only the rejected ones fail here.
-        status_code, submit_message = _http_error_details(error)
+        status_code, submit_message = http_error_details(error)
         bulk_uuid, rejected = _partial_submission(error)
         if bulk_uuid is None:
             row_ids = [ref for op in ops for ref in op.row_refs]

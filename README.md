@@ -7,20 +7,57 @@ set, category, product, price, MSI stock and media writers), and file
 adapters for the native csv/json/xlsx import columns.
 
 Targets standard Magento 2 REST endpoints: the library needs no custom API
-module, so the same code runs against Magento Open Source 2.4.6+ (verified
-live on 2.4.9) and any Commerce install. An optional companion module
+module. It targets Magento Open Source 2.4.6 and newer, and the lines that
+were actually run end to end are listed under "Compatibility" below; Commerce
+installs use the same REST API but are not part of that table. An optional companion module
 (`DDTCoreX_DagsterBridge`, see "Optional bridge module" below) makes parts of
 the catalog import cheaper when it is installed; nothing requires it.
 
 ## Installation
 
 ```
-pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@v0.3.1"
+pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@v0.4.0"
 ```
 
 `dagster>=1.13.17`, `requests` and `pydantic` v2 come with it. The `xlsx`
 extra adds `openpyxl`, needed only to read `.xlsx` sources; csv and json use
 the standard library.
+
+## Compatibility
+
+Every row below is one run of the whole live suite (`pytest -m live`: the
+sample catalog in sync and bulk mode with the bridge off and required, the
+rerun that must skip everything, a price change reaching a full page cached
+storefront, store scoped bulk updates, special price dates, and the category
+and attribute set name rules) against a fresh sandbox of that exact Magento
+version. The records are under `compat/results/` and are produced by
+`scripts/compat-matrix.sh`; the table is generated from the newest record per
+version.
+
+<!-- compat:start -->
+| Version | Magento patch | PHP | Database | Search | Bridge | Date | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2.4.6-p15 | 2.4.6-p15 | 8.2.26 | MariaDB 10.11.18 | elasticsearch 7.17.28 | 1.0.0 | 2026-10-03 | verified (15 of 15 passed) |
+| 2.4.7-p10 | - | - | - | - | - | 2026-09-30 | not provisioned: Composer security blocking refused a dependency of 2.4.7-p10 and govard bootstrap cannot disable it |
+| 2.4.8-p5 | 2.4.8-p5 | 8.4.1 | MariaDB 11.4.10 | opensearch 3.0 | 1.0.0 | 2026-10-02 | verified (15 of 15 passed) |
+| 2.4.9 | 2.4.9 | 8.5.9 | MariaDB 11.8.8 | opensearch 3.0 | 1.0.0 | 2026-10-02 | verified (15 of 15 passed) |
+<!-- compat:end -->
+
+- A version with no verified row is not claimed. In particular 2.4.7 is not
+  verified: the sandbox cannot install it through govard, because Composer's
+  security blocking refuses `league/flysystem` 2.x and govard's Magento
+  bootstrap cannot lift it. The library uses only standard REST endpoints, but
+  there is no recorded run on that line.
+- The bulk catalog test is intermittent on the older lines. 2.4.8-p5 failed
+  it once (2026-09-30) and passed on every run after; 2.4.6-p15 failed it twice
+  in one run (2026-10-02: the sandbox reset inside the test exited non-zero, and
+  one media upload answered "The product can't be saved.") and passed all 15
+  the next day on the same code, so each of those lines has a failed and a
+  verified record, and the table shows the newest. None of it was explained:
+  one run's log was lost and the other's reset error was not captured. 2.4.9
+  passed all 15 on each of its two runs.
+- Rows list the Magento patch the run used, not a range: a newer patch is
+  expected to behave the same but is unverified until the matrix is rerun.
 
 ## Layers
 
@@ -347,6 +384,17 @@ them once and then only write quantities through `import_source_items`.
   `store_values` entry is a separate request through `/rest/<store_code>/`
   carrying only the localized attributes, so a store view never gets
   overrides for price, status or anything else it did not ask for.
+- **Names:** category paths and attribute set names match existing ones
+  without regard to case (lower-cased the way Magento's own category processor
+  does it, so `men/tops` finds `Men/Tops`, and `ß` is not folded to `ss`), with
+  or without the bridge. New nodes keep the spelling the caller gave. Two
+  sibling categories that differ only by case are not something the library
+  creates: on the native path it keeps the first one in tree order and warns;
+  with the bridge, Magento's processor decides which of them a path resolves to
+  and logs nothing, so avoid such siblings if the choice matters. Attribute set
+  names follow the database collation, which also ignores accents by default,
+  so a set differing from another only by an accent is refused by Magento.
+  Attribute group and option labels follow their own rules.
 - **Diff:** every importer except the plan-only ones takes a snapshot first
   and reports `skipped_unchanged` for rows that already match. Pass
   `diff=False` to rewrite everything.
@@ -578,6 +626,12 @@ and both were read back through REST afterwards, and path A reported 10,000 of
   nothing for either shape). Rows rejected over it are retried without the
   key, with a warning naming them, so the import stays green while the value
   stays unset on 2.4.6.
+- On Magento 2.4.6 an async bulk operation whose product has no SKU raises a
+  `TypeError` that the consumer does not catch: the consumer process exits and
+  the operation stays open (observed on 2.4.6-p15; 2.4.9 answers a normal
+  failure). The library never sends such an item, because `sku` is
+  required by the row model, but a hand written bulk can. Check that all
+  `async.operations.all` consumers are still running if a bulk stays open.
 - No hard delete anywhere.
 
 ## License

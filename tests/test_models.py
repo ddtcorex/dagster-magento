@@ -147,3 +147,19 @@ def test_configurable_with_variation_missing_attribute_key():
             ],
             configurable_attributes=["color", "size"],
         )
+
+
+def test_price_row_rejects_an_inverted_special_range_but_keeps_valid_and_open_ranges():
+    from dagster_magento.models import PriceRow
+
+    inverted = {"sku": "S", "special_price": 5, "special_from": "2027-02-01", "special_to": "2027-01-01"}
+    valid, errors = validate_rows(PriceRow, [inverted], "sku")
+    assert valid == [] and "special_to is before special_from" in errors[0].message
+
+    fine = [
+        {"sku": "A", "special_price": 5, "special_from": "2027-01-01 00:00:00", "special_to": "2027-01-01 00:00:00"},
+        {"sku": "B", "special_price": 5, "special_from": "2027-01-01"},
+        {"sku": "C", "special_price": 5, "special_from": "01/02/2027", "special_to": "not a date"},
+    ]
+    valid, errors = validate_rows(PriceRow, fine, "sku")
+    assert [row.sku for row in valid] == ["A", "B", "C"] and errors == []

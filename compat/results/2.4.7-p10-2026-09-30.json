@@ -1,0 +1,8 @@
+{
+  "date": "2026-09-30",
+  "facts": {},
+  "reason": "Composer security blocking refused a dependency of 2.4.7-p10 and govard bootstrap cannot disable it",
+  "status": "not provisioned",
+  "tests": [],
+  "version": "2.4.7-p10"
+}

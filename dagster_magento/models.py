@@ -1,5 +1,6 @@
 """Canonical catalog row models for Magento 2 ETL imports."""
 
+from datetime import datetime
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, model_validator, ValidationError
@@ -166,6 +167,20 @@ class PriceRow(BaseModel):
     special_from: str | None = None
     special_to: str | None = None
     tiers: list[TierPrice] | None = None
+
+    @model_validator(mode="after")
+    def _special_range_is_ordered(self):
+        # Magento's price storage stores an inverted range and reports it
+        # as a success (verified live), so the library is the only gate.
+        if self.special_from and self.special_to:
+            try:
+                start = datetime.fromisoformat(self.special_from)
+                end = datetime.fromisoformat(self.special_to)
+            except ValueError:
+                return self
+            if end < start:
+                raise ValueError("special_to is before special_from")
+        return self
 
 
 class SourceItemRow(BaseModel):

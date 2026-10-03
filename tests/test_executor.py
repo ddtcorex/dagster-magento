@@ -646,3 +646,47 @@ def test_bulk_submission_auth_error_still_aborts():
 
     with pytest.raises(MagentoAuthError):
         execute(resource, [_bulk_op("A")], mode="bulk")
+
+
+TIER_MESSAGE = (
+    "Invalid attribute SKU = %SKU. Row ID: SKU = %SKU, Website ID: %websiteId, "
+    "Customer Group: %customerGroup, Quantity: %qty."
+)
+
+
+def test_positional_parameters_fill_each_named_placeholder_once_even_when_it_repeats():
+    """Magento answers tier price failures with a list and a message that names
+    %SKU twice; the values map to the distinct names in first-appearance order,
+    never one value per occurrence."""
+    filled = executor._fill_message(TIER_MESSAGE, ["ABC", "1", "ALL GROUPS", "2"])
+
+    assert filled == (
+        "Invalid attribute SKU = ABC. Row ID: SKU = ABC, Website ID: 1, "
+        "Customer Group: ALL GROUPS, Quantity: 2."
+    )
+
+
+def test_a_list_failure_for_store_one_does_not_fail_the_same_sku_in_store_zero():
+    ops = [_price_op("X", 10, store_id=0), _price_op("X", 12, store_id=1)]
+    failed_items = [
+        {"message": "Requested store is not found. Row ID: SKU = %SKU, Store ID: %storeId.",
+         "parameters": ["X", "1"]}
+    ]
+
+    result = execute(StubResource(responses=[failed_items]), ops, mode="sync")
+
+    assert (result.succeeded, result.failed) == (1, 1)
+    assert "Store ID: 1" in result.errors[0]["message"]
+
+
+def test_a_list_failure_does_not_match_a_row_whose_sku_equals_a_numeric_parameter():
+    ops = [_price_op("ABC", 1, store_id=7), _price_op("7", 2, store_id=0)]
+    failed_items = [
+        {"message": "Requested store is not found. Row ID: SKU = %SKU, Store ID: %storeId.",
+         "parameters": ["ABC", "7"]}
+    ]
+
+    result = execute(StubResource(responses=[failed_items]), ops, mode="sync")
+
+    assert result.errors[0]["row_ids"] == ["ABC"]
+    assert (result.succeeded, result.failed) == (1, 1)
