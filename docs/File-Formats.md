@@ -12,7 +12,7 @@ advanced pricing tier columns. Each mapper returns the models plus a list of
 not an exception. This page gives the exact syntax each parser accepts, what is
 dropped, what passes through, and the gotchas. It was checked against
 `formats/readers.py`, `formats/columns.py` and `formats/catalog.py` at version
-0.4.0.
+0.4.1.
 
 ## Quick start
 
