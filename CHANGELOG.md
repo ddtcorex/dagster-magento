@@ -49,9 +49,12 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ### Verified
 
-- Live suite 15 of 15 on 2.4.6-p15, 2.4.8-p5 (on a rerun) and 2.4.9; 2.4.7 is
-  not verified because it cannot be installed through govard. See "Compatibility"
-  in the README for the exact patches, PHP and database versions.
+- Live suite 15 of 15 on 2.4.6-p15, 2.4.8-p5 and 2.4.9 on the final code. The
+  bulk catalog test failed intermittently on 2.4.6-p15 (twice in one run) and
+  once on 2.4.8-p5 before passing on reruns, unexplained; 2.4.9 never failed.
+  2.4.7 is not verified because it cannot be installed through govard. See
+  "Compatibility" in the README for the exact patches, PHP and database
+  versions.
 
 ## [0.3.1] - 2026-09-30
 

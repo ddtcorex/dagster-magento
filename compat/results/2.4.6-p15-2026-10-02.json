@@ -2,88 +2,88 @@
   "date": "2026-10-02",
   "facts": {
     "bridge": "1.0.0",
-    "database": "MariaDB 11.4.10",
-    "magento": "2.4.8-p5",
-    "php": "8.4.1",
-    "search": "opensearch 3.0"
+    "database": "MariaDB 10.11.18",
+    "magento": "2.4.6-p15",
+    "php": "8.2.26",
+    "search": "opensearch 7.17.28"
   },
-  "status": "verified",
+  "status": "failed",
   "tests": [
     {
       "name": "tests.live.test_catalog_e2e::test_full_sample_catalog_imports_in_sync_mode[never]",
       "outcome": "passed",
-      "seconds": 45.616
+      "seconds": 50.506
     },
     {
       "name": "tests.live.test_catalog_e2e::test_full_sample_catalog_imports_in_sync_mode[require]",
       "outcome": "passed",
-      "seconds": 22.946
+      "seconds": 23.431
     },
     {
       "name": "tests.live.test_catalog_e2e::test_second_run_is_all_skipped",
       "outcome": "passed",
-      "seconds": 6.122
+      "seconds": 6.681
     },
     {
       "name": "tests.live.test_catalog_e2e::test_same_catalog_imports_in_bulk_mode[never]",
-      "outcome": "passed",
-      "seconds": 331.115
+      "outcome": "failed",
+      "seconds": 134.043
     },
     {
       "name": "tests.live.test_catalog_e2e::test_same_catalog_imports_in_bulk_mode[require]",
-      "outcome": "passed",
-      "seconds": 328.607
+      "outcome": "failed",
+      "seconds": 291.659
     },
     {
       "name": "tests.live.test_category_case::test_category_names_match_the_same_with_and_without_the_bridge[never]",
       "outcome": "passed",
-      "seconds": 13.038
+      "seconds": 13.685
     },
     {
       "name": "tests.live.test_category_case::test_category_names_match_the_same_with_and_without_the_bridge[require]",
       "outcome": "passed",
-      "seconds": 14.069
+      "seconds": 15.102
     },
     {
       "name": "tests.live.test_category_case::test_attribute_set_names_match_without_regard_to_case",
       "outcome": "passed",
-      "seconds": 14.305
+      "seconds": 14.504
     },
     {
       "name": "tests.live.test_price_storefront::test_price_change_reaches_storefront_after_cron_with_fpc",
       "outcome": "passed",
-      "seconds": 115.783
+      "seconds": 88.069
     },
     {
       "name": "tests.live.test_price_storefront::test_bulk_store_view_update_keeps_store_scope",
       "outcome": "passed",
-      "seconds": 14.105
+      "seconds": 14.494
     },
     {
       "name": "tests.live.test_price_storefront::test_special_price_dates_round_trip",
       "outcome": "passed",
-      "seconds": 13.149
+      "seconds": 13.503
     },
     {
       "name": "tests.live.test_probes::test_probe_bulk_rejects_the_whole_submission_when_an_item_is_malformed",
       "outcome": "passed",
-      "seconds": 18.133
+      "seconds": 18.358
     },
     {
       "name": "tests.live.test_probes::test_probe_bulk_reports_a_consumer_failure_per_operation",
       "outcome": "passed",
-      "seconds": 11.96
+      "seconds": 15.429
     },
     {
       "name": "tests.live.test_probes::test_probe_price_storage_failed_items",
       "outcome": "passed",
-      "seconds": 12.21
+      "seconds": 12.663
     },
     {
       "name": "tests.live.test_probes::test_probe_production_mode_error_bodies",
       "outcome": "passed",
-      "seconds": 80.002
+      "seconds": 70.922
     }
   ],
-  "version": "2.4.8-p5"
+  "version": "2.4.6-p15"
 }

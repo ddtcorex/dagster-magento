@@ -37,10 +37,10 @@ version.
 <!-- compat:start -->
 | Version | Magento patch | PHP | Database | Search | Bridge | Date | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2.4.6-p15 | 2.4.6-p15 | 8.2.26 | MariaDB 10.11.18 | elasticsearch7 7.17.28 | 1.0.0 | 2026-09-30 | verified (15 of 15 passed) |
+| 2.4.6-p15 | 2.4.6-p15 | 8.2.26 | MariaDB 10.11.18 | elasticsearch 7.17.28 | 1.0.0 | 2026-10-03 | verified (15 of 15 passed) |
 | 2.4.7-p10 | - | - | - | - | - | 2026-09-30 | not provisioned: Composer security blocking refused a dependency of 2.4.7-p10 and govard bootstrap cannot disable it |
 | 2.4.8-p5 | 2.4.8-p5 | 8.4.1 | MariaDB 11.4.10 | opensearch 3.0 | 1.0.0 | 2026-10-02 | verified (15 of 15 passed) |
-| 2.4.9 | 2.4.9 | 8.5.9 | MariaDB 11.8.8 | opensearch 3.0 | 1.0.0 | 2026-09-30 | verified (15 of 15 passed) |
+| 2.4.9 | 2.4.9 | 8.5.9 | MariaDB 11.8.8 | opensearch 3.0 | 1.0.0 | 2026-10-02 | verified (15 of 15 passed) |
 <!-- compat:end -->
 
 - A version with no verified row is not claimed. In particular 2.4.7 is not
@@ -48,9 +48,14 @@ version.
   security blocking refuses `league/flysystem` 2.x and govard's Magento
   bootstrap cannot lift it. The library uses only standard REST endpoints, but
   there is no recorded run on that line.
-- 2.4.8-p5 failed one bulk test on its first run and passed all 15 on a rerun
-  two days later. The first run's log was lost, so that failure was not
-  explained; both records are kept.
+- The bulk catalog test is intermittent on the older lines. 2.4.8-p5 failed
+  it once (2026-09-30) and passed on every run after; 2.4.6-p15 failed it twice
+  in one run (2026-10-02: the sandbox reset inside the test exited non-zero, and
+  one media upload answered "The product can't be saved.") and passed all 15
+  the next day on the same code, so each of those lines has a failed and a
+  verified record, and the table shows the newest. None of it was explained:
+  one run's log was lost and the other's reset error was not captured. 2.4.9
+  passed all 15 on each of its two runs.
 - Rows list the Magento patch the run used, not a range: a newer patch is
   expected to behave the same but is unverified until the matrix is rerun.
 
