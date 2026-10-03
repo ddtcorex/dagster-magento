@@ -122,7 +122,10 @@ class MagentoResource(ConfigurableResource):
             self._fetch_token()
             response = self._send_timed(method, url, endpoint, logger, " retry", **kwargs)
 
-        retry_statuses = self.POST_RETRY_STATUSES if method == "POST" else self.RETRY_STATUSES
+        # An async bulk submission is not idempotent whatever its verb: a
+        # gateway error after Magento accepted it would schedule it twice.
+        not_idempotent = method == "POST" or api_prefix.startswith("async/bulk")
+        retry_statuses = self.POST_RETRY_STATUSES if not_idempotent else self.RETRY_STATUSES
         attempt = 0
         while response.status_code in retry_statuses and attempt < self._MAX_RETRIES:
             retry_after = self._parse_retry_after(response)

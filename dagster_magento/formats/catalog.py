@@ -236,15 +236,19 @@ def _build_images(fields: dict[str, str]) -> list[dict[str, Any]]:
         if not entry["label"]:
             entry["label"] = fields.get(label_column, "") or None
 
-    additional_sources = [s.strip() for s in fields.get("additional_images", "").split(",") if s.strip()]
-    additional_labels = [l.strip() for l in fields.get("additional_image_labels", "").split(",") if l.strip()]
+    # Pair by original position: a blank source or label keeps its slot, so
+    # "A,,C" never hands C to the second image.
+    additional_sources = [s.strip() for s in fields.get("additional_images", "").split(",")]
+    additional_labels = [l.strip() for l in fields.get("additional_image_labels", "").split(",")]
     for index, source in enumerate(additional_sources):
+        if not source:
+            continue
         if source not in sources:
             sources[source] = {"roles": [], "label": None}
             order.append(source)
         entry = sources[source]
         if not entry["label"] and index < len(additional_labels):
-            entry["label"] = additional_labels[index]
+            entry["label"] = additional_labels[index] or None
 
     return [
         {"source": source, "position": position, "roles": sources[source]["roles"], "label": sources[source]["label"]}
@@ -410,7 +414,14 @@ def products_from_rows(
             if key in parsed:
                 store_entry[key] = parsed.pop(key)
         store_entry.update(attrs)
-        store_entry.update(parsed)
+        if parsed:
+            # Everything left (price, weight, categories, websites, images,
+            # variations, ...) is global: written as a store override it
+            # would fail the whole SKU as an unknown attribute.
+            warn(
+                f"line {line}: {sku}: store view {store_view_code!r} row ignores "
+                f"non-localized column(s): {', '.join(sorted(parsed))}"
+            )
         products[sku].store_values[store_view_code] = store_entry
 
     return [products[sku] for sku in order], errors
@@ -455,6 +466,19 @@ def _category_date(value: str) -> str:
         return value
 
 
+_FLAG_TRUE = frozenset({"yes", "1", "true"})
+_FLAG_FALSE = frozenset({"no", "0", "false"})
+
+
+def _category_flag(column: str, value: str) -> int:
+    lowered = value.lower()
+    if lowered in _FLAG_TRUE:
+        return 1
+    if lowered in _FLAG_FALSE:
+        return 0
+    raise ValueError(f"{column}: expected yes, no, 1, 0, true or false, got {value!r}")
+
+
 def _parse_category_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
     for column, raw_value in row.items():
@@ -465,7 +489,7 @@ def _parse_category_fields(row: dict[str, str], warn, dropped_seen: set[str]) ->
             _warn_once(column, warn, dropped_seen)
             continue
         if column in _CATEGORY_YES_NO:
-            attributes[column] = 1 if value.lower() == "yes" else 0
+            attributes[column] = _category_flag(column, value)
         elif column in _CATEGORY_LABELS:
             attributes[column] = _CATEGORY_LABELS[column].get(value.lower(), value)
         elif column in _CATEGORY_DATES:
@@ -509,7 +533,11 @@ def categories_from_rows(
         if store_view.lower() not in global_codes:
             store_rows.append((line, path, store_view, rest))
             continue
-        attributes = _parse_category_fields(rest, warn, dropped_seen)
+        try:
+            attributes = _parse_category_fields(rest, warn, dropped_seen)
+        except ValueError as error:
+            errors.append(RowError(row_ref=f"line {line}: {path}", message=str(error)))
+            continue
         category = _validate_row(CategoryRow, {"path": path, "attributes": attributes}, line, path, errors)
         if category is None:
             continue
@@ -525,7 +553,10 @@ def categories_from_rows(
                 )
             )
             continue
-        categories[path].store_values[store_view] = _parse_category_fields(rest, warn, dropped_seen)
+        try:
+            categories[path].store_values[store_view] = _parse_category_fields(rest, warn, dropped_seen)
+        except ValueError as error:
+            errors.append(RowError(row_ref=f"line {line}: {path}", message=str(error)))
 
     return [categories[path] for path in order], errors
 
@@ -727,6 +758,15 @@ def prices_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[PriceRow], 
 # -- MSI source items -------------------------------------------------------------
 
 
+def _required_cell(row: dict[str, str], column: str) -> str:
+    """A blank cell is an error, never a silent 0: for a source item that
+    would put the SKU out of stock."""
+    value = (row.get(column) or "").strip()
+    if not value:
+        raise ValueError(f"{column} is empty")
+    return value
+
+
 def source_items_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[SourceItemRow], list[RowError]]:
     """Map cataloginventory_source_item.csv rows onto SourceItemRow."""
     items: list[SourceItemRow] = []
@@ -736,8 +776,8 @@ def source_items_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[Sourc
         source_code = (row.get("source_code") or "").strip()
         ref = sku or source_code or f"line {line}"
         try:
-            quantity = float((row.get("quantity") or "0").strip() or "0")
-            status = int((row.get("status") or "0").strip() or "0")
+            quantity = float(_required_cell(row, "quantity"))
+            status = int(_required_cell(row, "status"))
         except ValueError as error:
             errors.append(RowError(row_ref=f"line {line}: {ref}", message=str(error)))
             continue

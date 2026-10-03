@@ -134,3 +134,12 @@ def test_read_rows_xlsx_missing_openpyxl_raises_import_error_with_hint(tmp_path,
 
     with pytest.raises(ImportError, match=r"dagster-magento\[xlsx\]"):
         list(read_rows(path))
+
+
+def test_read_rows_json_scalars_are_read_as_text(tmp_path):
+    path = tmp_path / "rows.json"
+    path.write_text('[{"sku": "A", "price": 12, "weight": 1.5, "flag": true, "note": null}]', encoding="utf-8")
+
+    (_, row), = list(read_rows(path))
+
+    assert row == {"sku": "A", "price": "12", "weight": "1.5", "flag": "1", "note": ""}

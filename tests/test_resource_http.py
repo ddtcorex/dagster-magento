@@ -233,3 +233,35 @@ def test_post_is_retried_on_429():
         assert resource.post("categories", {"category": {"name": "Men"}}).json() == {"id": 7}
 
     assert created.call_count == 2
+
+
+def test_async_bulk_put_is_not_retried_on_a_gateway_error():
+    """A 502/503/504 after an async bulk submission may come from a gateway
+    that timed out while Magento accepted it: a retry would schedule the same
+    bulk twice. The bulk route is retried only on 429 whatever the verb."""
+    resource = _quiet_resource()
+    with requests_mock.Mocker() as m:
+        m.post(TOKEN, json="fake-token-123")
+        submitted = m.put(
+            "https://shop.test/rest/all/async/bulk/V1/products/bySku",
+            [{"status_code": 502}, {"status_code": 200, "json": {"bulk_uuid": "u"}}],
+        )
+
+        with pytest.raises(requests.exceptions.HTTPError):
+            resource.submit_bulk("PUT", "products/bySku", [{"product": {"sku": "A"}}])
+
+    assert submitted.call_count == 1
+
+
+def test_async_bulk_put_is_retried_on_429():
+    resource = _quiet_resource()
+    with requests_mock.Mocker() as m:
+        m.post(TOKEN, json="fake-token-123")
+        submitted = m.put(
+            "https://shop.test/rest/all/async/bulk/V1/products/bySku",
+            [{"status_code": 429}, {"status_code": 200, "json": {"bulk_uuid": "u"}}],
+        )
+
+        assert resource.submit_bulk("PUT", "products/bySku", [{"product": {"sku": "A"}}]) == "u"
+
+    assert submitted.call_count == 2

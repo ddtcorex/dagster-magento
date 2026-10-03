@@ -130,8 +130,10 @@ sorted:
 MagentoImportError: the bridge is required for this import but the store does not offer: categories.upsert
 ```
 
-For the other importers `require` has nothing to check and behaves like
-`auto`.
+For the other importers (attributes, attribute sets, prices, sources, stocks,
+stock source links, source items and media) `require` has nothing to check, so
+they log a warning that `use_bridge='require'` has no effect and run the native
+path.
 
 Failures while a capability is in use:
 

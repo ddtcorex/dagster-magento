@@ -16,6 +16,22 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- A blank `quantity` or `status` in a source item row is a row error instead of
+  becoming 0 (out of stock) (#14).
+- Category `yes/no` columns accept `1` and `true` as well as `yes`, and reject
+  other values, instead of turning `is_active=1` into 0 (#15).
+- A blank image label no longer shifts the later labels onto the wrong images
+  (#16).
+- A store-view product row ignores non-localized columns with one warning
+  instead of failing the whole SKU (#17).
+- The json reader converts numbers, booleans and null to text, so a JSON number
+  no longer raises `AttributeError` in a mapper (#18).
+- Async bulk submissions, including `PUT products/bySku`, are retried on 429
+  only, so a gateway timeout cannot schedule a bulk twice (#19).
+- `use_bridge="require"` logs a warning on the importers that use no bridge
+  capability instead of silently behaving like `auto` (#20).
+- `import_categories` applies `fail_on_error_ratio` after the
+  `default_sort_by` retry, on the merged result (#21).
 - `compat_record.py table` no longer rewrites a page from a marker quoted inside a
   sentence: a marker only counts when it stands alone on its line.
 - The usage text of `scripts/sandbox.sh` lists `bridge`, `bridge-off` and

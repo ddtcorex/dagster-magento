@@ -89,6 +89,16 @@ def _bridge(resource, use_bridge: BridgeMode, capabilities: tuple[str, ...]) -> 
     return client
 
 
+def _warn_unused_bridge(use_bridge: BridgeMode, importer: str) -> None:
+    """`require` cannot be enforced where an importer uses no capability:
+    say so instead of letting the caller assume the module was checked."""
+    if use_bridge == "require":
+        get_dagster_logger().warning(
+            f"use_bridge='require' has no effect on {importer}: it uses no bridge "
+            "capability, so nothing was checked and the native path runs"
+        )
+
+
 def _resolver(resource, bridge: BridgeClient | None = None, use_bridge: BridgeMode = "auto"):
     """A resolver that may create categories through the bridge; with
     `require` a failing upsert raises instead of falling back."""
@@ -227,6 +237,7 @@ def import_attributes(
     """Create or update attributes and their missing options. The writer
     already diffs options against the resolver's cache; `diff` is accepted
     for a uniform signature."""
+    _warn_unused_bridge(use_bridge, "import_attributes")
     valid, invalid = _validate(AttributeRow, rows, "code")
     resolver = _resolver(resource, _bridge(resource, use_bridge, ()), use_bridge)
     plan = plan_attributes(valid, resolver, behavior=behavior)
@@ -252,6 +263,7 @@ def import_attribute_sets(
     operations at all" would never hold. After 3 executed passes, every
     row that still plans a new operation fails with "attribute set not
     converged after 3 passes"."""
+    _warn_unused_bridge(use_bridge, "import_attribute_sets")
     valid, invalid = _validate(AttributeSetRow, rows, "name")
     bridge = _bridge(resource, use_bridge, ())
     resolver = _resolver(resource, bridge, use_bridge)
@@ -331,13 +343,14 @@ def import_categories(
     plan = plan_categories(
         valid, _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)), use_bridge)
     )
-    result = _run(
-        resource, [row.path for row in valid], plan, mode, invalid, fail_on_error_ratio, noop_succeeded=True
-    )
-    return _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio, use_bridge)
+    # The ratio is applied once, to the merged result, so a row the retry
+    # repairs never counts as a failure.
+    result = _run(resource, [row.path for row in valid], plan, mode, invalid, None, noop_succeeded=True)
+    result = _retry_without_default_sort_by(resource, valid, result, mode, use_bridge)
+    return _check_ratio(result, fail_on_error_ratio)
 
 
-def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio, use_bridge="auto"):
+def _retry_without_default_sort_by(resource, valid, result, mode, use_bridge="auto"):
     """Re-plan rows rejected over default_sort_by without the key.
 
     Returns the merged result, or `result` unchanged when no row needs the
@@ -381,7 +394,7 @@ def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_
         plan,
         mode,
         [],
-        fail_on_error_ratio,
+        None,
         noop_succeeded=True,
     )
     return _merge_retry(result, retry, paths)
@@ -552,6 +565,7 @@ def import_prices(
     """Base, special and tier prices through the price-storage list
     endpoints. Always sync: those endpoints take lists and have no bulk
     route, so `mode` is ignored."""
+    _warn_unused_bridge(use_bridge, "import_prices")
     valid, invalid = _validate(PriceRow, rows, "sku")
     merged, duplicates = _merge_prices(valid)
     snapshot = snapshot_prices(resource, list(dict.fromkeys(row.sku for row in merged)))
@@ -587,6 +601,7 @@ def import_sources(
     use_bridge: BridgeMode = "auto",
 ):
     """Create or overwrite MSI sources. `diff` is ignored (no snapshot)."""
+    _warn_unused_bridge(use_bridge, "import_sources")
     valid, invalid = _validate(SourceRow, rows, "source_code")
     plan = plan_sources(valid)
     return _run(resource, [row.source_code for row in valid], plan, mode, invalid, fail_on_error_ratio)
@@ -602,6 +617,7 @@ def import_stocks(
     use_bridge: BridgeMode = "auto",
 ):
     """Create MSI stocks bound to website sales channels. `diff` is ignored."""
+    _warn_unused_bridge(use_bridge, "import_stocks")
     valid, invalid = _validate(StockRow, rows, "name")
     plan = plan_stocks(valid, _resolver(resource, _bridge(resource, use_bridge, ()), use_bridge))
     return _run(resource, [row.name for row in valid], plan, mode, invalid, fail_on_error_ratio)
@@ -619,6 +635,7 @@ def import_stock_source_links(
 ):
     """Link sources to stocks. `stock_ids` (name -> id) is read from
     GET inventory/stocks when not given. `diff` is ignored."""
+    _warn_unused_bridge(use_bridge, "import_stock_source_links")
     valid, invalid = _validate(StockSourceLinkRow, rows, "stock")
     if stock_ids is None:
         stocks = resource.get("inventory/stocks").get("items", [])
@@ -639,6 +656,7 @@ def import_source_items(
 ):
     """Write source item quantity and status, skipping pairs whose current
     (quantity, status) already match. The last row per pair wins."""
+    _warn_unused_bridge(use_bridge, "import_source_items")
     valid, invalid = _validate(SourceItemRow, rows, "sku")
     unique, duplicates = _last_wins(valid, lambda row: (row.source_code, row.sku))
 
@@ -674,6 +692,7 @@ def import_media(
     writer needs it for image identity), so `diff` only documents that a
     matching image is never re-sent. A SKU whose gallery cannot be read
     fails its row."""
+    _warn_unused_bridge(use_bridge, "import_media")
     valid, invalid = _validate(ProductRow, rows, "sku")
     current: dict[str, list[dict]] = {}
     unreadable: list[RowError] = []

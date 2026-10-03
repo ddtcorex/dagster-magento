@@ -840,3 +840,82 @@ def test_attributes_rows_map_flags_onto_the_rest_attribute_shape():
     assert attributes[1].flags == {}
     # One warning per dropped column, not per row.
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("blank", ["quantity", "status"])
+def test_source_items_blank_quantity_or_status_is_a_row_error(blank):
+    row = {"sku": "A", "source_code": "default", "quantity": "5", "status": "1", blank: "  "}
+
+    items, errors = catalog.source_items_from_rows([(2, row)])
+
+    assert items == []
+    assert [error.row_ref for error in errors] == ["line 2: A"]
+    assert blank in errors[0].message
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [("yes", 1), ("Yes", 1), ("1", 1), ("true", 1), ("no", 0), ("0", 0), ("False", 0)],
+)
+def test_category_flags_accept_yes_no_one_zero_true_false(text, expected):
+    categories, errors = catalog.categories_from_rows([(2, {"name": "Men", "is_active": text})])
+
+    assert errors == []
+    assert categories[0].attributes["is_active"] == expected
+
+
+def test_category_flag_with_an_unknown_value_is_a_row_error():
+    categories, errors = catalog.categories_from_rows([(2, {"name": "Men", "is_anchor": "maybe"})])
+
+    assert categories == []
+    assert "is_anchor" in errors[0].message
+
+
+def test_blank_additional_image_label_keeps_later_labels_aligned():
+    rows = [
+        (
+            2,
+            {
+                "sku": "IMG2",
+                "additional_images": "/a.jpg,/b.jpg,/c.jpg",
+                "additional_image_labels": "One,,Three",
+            },
+        )
+    ]
+
+    products, errors = catalog.products_from_rows(rows)
+
+    assert errors == []
+    assert [(image.source, image.label) for image in products[0].images] == [
+        ("/a.jpg", "One"),
+        ("/b.jpg", None),
+        ("/c.jpg", "Three"),
+    ]
+
+
+def test_store_view_row_keeps_only_localized_values_and_warns_once():
+    calls, warn = _warn_spy()
+    rows = [
+        (2, {"sku": "S1", "store_view_code": "", "name": "Tee", "price": "10"}),
+        (
+            3,
+            {
+                "sku": "S1",
+                "store_view_code": "fr",
+                "name": "Tee FR",
+                "price": "12",
+                "weight": "2",
+                "categories": "Default Category/Men",
+                "product_websites": "base",
+                "meta_title": "Tee FR",
+            },
+        ),
+    ]
+
+    products, errors = catalog.products_from_rows(rows, warn=warn)
+
+    assert errors == []
+    assert products[0].store_values["fr"] == {"name": "Tee FR", "meta_title": "Tee FR"}
+    assert products[0].price == 10
+    assert len(calls) == 1
+    assert "fr" in calls[0] and "price" in calls[0] and "categories" in calls[0]

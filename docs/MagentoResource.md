@@ -349,11 +349,11 @@ developer mode stack traces with server paths do not end up in row errors.
 - `post`, `put` and `delete` return a `Response`; call `.json()` yourself.
 - `get_paginated` returns a list, not the search result envelope.
 - A `POST` (product creates, media adds, configurable links, the price
-  information reads) fails at once on a 502 or 504. A `PUT` is retried up to
-  three times on 429, 502, 503 and 504, and bulk updates of existing products go
-  out as `PUT async/bulk/V1/products/bySku`: a gateway timeout that Magento had
-  already accepted can schedule that bulk twice. Checked with `submit_bulk("PUT",
-  "products/bySku", ...)` against a mocked 502.
+  information reads) fails at once on a 502, 503 or 504. So does every async
+  bulk submission, including `PUT async/bulk/V1/products/bySku`, because a
+  gateway timeout that Magento had already accepted would schedule that bulk
+  twice. All of them are retried on 429 only. Other `PUT` calls are retried up
+  to three times on 429, 502, 503 and 504.
 - A token is cached for the life of the resource instance and only replaced
   after a 401.
 - There is no client side rate limiting; only Magento's 429 slows you down.
