@@ -711,3 +711,40 @@ def test_categories_ratio_still_raises_when_the_retry_fails_too():
 
         with pytest.raises(MagentoImportError):
             import_categories(make_resource(), [row], fail_on_error_ratio=0.5)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "import_attributes",
+        "import_attribute_sets",
+        "import_prices",
+        "import_sources",
+        "import_stocks",
+        "import_stock_source_links",
+        "import_source_items",
+        "import_media",
+    ],
+)
+def test_require_warns_on_importers_that_use_no_bridge_capability(name, caplog):
+    from dagster_magento import importers
+
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="t")
+        m.get(f"{BASE}/inventory/stocks", json={"items": []})
+        with caplog.at_level("WARNING"):
+            getattr(importers, name)(make_resource(), [], use_bridge="require")
+
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert name in messages and "use_bridge='require'" in messages
+
+
+def test_require_does_not_warn_where_a_capability_is_enforced(caplog):
+    from dagster_magento.importers import import_attributes
+
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="t")
+        with caplog.at_level("WARNING"):
+            import_attributes(make_resource(), [], use_bridge="auto")
+
+    assert "use_bridge" not in " ".join(record.getMessage() for record in caplog.records)
