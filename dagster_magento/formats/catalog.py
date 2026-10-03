@@ -236,15 +236,19 @@ def _build_images(fields: dict[str, str]) -> list[dict[str, Any]]:
         if not entry["label"]:
             entry["label"] = fields.get(label_column, "") or None
 
-    additional_sources = [s.strip() for s in fields.get("additional_images", "").split(",") if s.strip()]
-    additional_labels = [l.strip() for l in fields.get("additional_image_labels", "").split(",") if l.strip()]
+    # Pair by original position: a blank source or label keeps its slot, so
+    # "A,,C" never hands C to the second image.
+    additional_sources = [s.strip() for s in fields.get("additional_images", "").split(",")]
+    additional_labels = [l.strip() for l in fields.get("additional_image_labels", "").split(",")]
     for index, source in enumerate(additional_sources):
+        if not source:
+            continue
         if source not in sources:
             sources[source] = {"roles": [], "label": None}
             order.append(source)
         entry = sources[source]
         if not entry["label"] and index < len(additional_labels):
-            entry["label"] = additional_labels[index]
+            entry["label"] = additional_labels[index] or None
 
     return [
         {"source": source, "position": position, "roles": sources[source]["roles"], "label": sources[source]["label"]}

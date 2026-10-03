@@ -869,3 +869,25 @@ def test_category_flag_with_an_unknown_value_is_a_row_error():
 
     assert categories == []
     assert "is_anchor" in errors[0].message
+
+
+def test_blank_additional_image_label_keeps_later_labels_aligned():
+    rows = [
+        (
+            2,
+            {
+                "sku": "IMG2",
+                "additional_images": "/a.jpg,/b.jpg,/c.jpg",
+                "additional_image_labels": "One,,Three",
+            },
+        )
+    ]
+
+    products, errors = catalog.products_from_rows(rows)
+
+    assert errors == []
+    assert [(image.source, image.label) for image in products[0].images] == [
+        ("/a.jpg", "One"),
+        ("/b.jpg", None),
+        ("/c.jpg", "Three"),
+    ]
