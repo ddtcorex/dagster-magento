@@ -668,3 +668,46 @@ def test_import_categories_reuses_a_category_that_differs_only_by_case():
     assert result.failed == 0
     assert [r for r in m.request_history if r.method == "POST" and r.url.endswith("/categories")] == []
     assert len(_put_bodies(m, 5)) == 1
+
+
+def test_categories_ratio_is_checked_after_the_default_sort_by_retry():
+    """The ratio must see the merged result: a row the retry repairs is not a
+    failure, so it must not trip fail_on_error_ratio."""
+    from dagster_magento.importers import import_categories
+    from dagster_magento.models import CategoryRow
+
+    row = CategoryRow(
+        path="Default Category/Men",
+        attributes={"default_sort_by": "position", "description": "Men"},
+    )
+    with requests_mock.Mocker() as m:
+        _mock_category_tree(m)
+        m.put(
+            f"{BASE}/categories/5",
+            [{"status_code": 400, "json": TYPE_ERROR_400}, {"status_code": 200, "json": {"id": 5}}],
+        )
+
+        result = import_categories(make_resource(), [row], fail_on_error_ratio=0.5)
+
+    assert result.failed == 0
+    assert result.succeeded == 1
+
+
+def test_categories_ratio_still_raises_when_the_retry_fails_too():
+    from dagster_magento.executor import MagentoImportError
+    from dagster_magento.importers import import_categories
+    from dagster_magento.models import CategoryRow
+
+    row = CategoryRow(
+        path="Default Category/Men",
+        attributes={"default_sort_by": "position", "description": "Men"},
+    )
+    with requests_mock.Mocker() as m:
+        _mock_category_tree(m)
+        m.put(
+            f"{BASE}/categories/5",
+            [{"status_code": 400, "json": TYPE_ERROR_400}, {"status_code": 400, "json": {"message": "boom"}}],
+        )
+
+        with pytest.raises(MagentoImportError):
+            import_categories(make_resource(), [row], fail_on_error_ratio=0.5)

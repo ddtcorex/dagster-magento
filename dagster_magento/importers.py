@@ -331,13 +331,14 @@ def import_categories(
     plan = plan_categories(
         valid, _resolver(resource, _bridge(resource, use_bridge, (BridgeClient.CATEGORIES_UPSERT,)), use_bridge)
     )
-    result = _run(
-        resource, [row.path for row in valid], plan, mode, invalid, fail_on_error_ratio, noop_succeeded=True
-    )
-    return _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio, use_bridge)
+    # The ratio is applied once, to the merged result, so a row the retry
+    # repairs never counts as a failure.
+    result = _run(resource, [row.path for row in valid], plan, mode, invalid, None, noop_succeeded=True)
+    result = _retry_without_default_sort_by(resource, valid, result, mode, use_bridge)
+    return _check_ratio(result, fail_on_error_ratio)
 
 
-def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_ratio, use_bridge="auto"):
+def _retry_without_default_sort_by(resource, valid, result, mode, use_bridge="auto"):
     """Re-plan rows rejected over default_sort_by without the key.
 
     Returns the merged result, or `result` unchanged when no row needs the
@@ -381,7 +382,7 @@ def _retry_without_default_sort_by(resource, valid, result, mode, fail_on_error_
         plan,
         mode,
         [],
-        fail_on_error_ratio,
+        None,
         noop_succeeded=True,
     )
     return _merge_retry(result, retry, paths)
