@@ -414,7 +414,14 @@ def products_from_rows(
             if key in parsed:
                 store_entry[key] = parsed.pop(key)
         store_entry.update(attrs)
-        store_entry.update(parsed)
+        if parsed:
+            # Everything left (price, weight, categories, websites, images,
+            # variations, ...) is global: written as a store override it
+            # would fail the whole SKU as an unknown attribute.
+            warn(
+                f"line {line}: {sku}: store view {store_view_code!r} row ignores "
+                f"non-localized column(s): {', '.join(sorted(parsed))}"
+            )
         products[sku].store_values[store_view_code] = store_entry
 
     return [products[sku] for sku in order], errors

@@ -891,3 +891,31 @@ def test_blank_additional_image_label_keeps_later_labels_aligned():
         ("/b.jpg", None),
         ("/c.jpg", "Three"),
     ]
+
+
+def test_store_view_row_keeps_only_localized_values_and_warns_once():
+    calls, warn = _warn_spy()
+    rows = [
+        (2, {"sku": "S1", "store_view_code": "", "name": "Tee", "price": "10"}),
+        (
+            3,
+            {
+                "sku": "S1",
+                "store_view_code": "fr",
+                "name": "Tee FR",
+                "price": "12",
+                "weight": "2",
+                "categories": "Default Category/Men",
+                "product_websites": "base",
+                "meta_title": "Tee FR",
+            },
+        ),
+    ]
+
+    products, errors = catalog.products_from_rows(rows, warn=warn)
+
+    assert errors == []
+    assert products[0].store_values["fr"] == {"name": "Tee FR", "meta_title": "Tee FR"}
+    assert products[0].price == 10
+    assert len(calls) == 1
+    assert "fr" in calls[0] and "price" in calls[0] and "categories" in calls[0]
