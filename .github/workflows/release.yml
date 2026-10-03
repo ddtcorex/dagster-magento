@@ -1,0 +1,54 @@
+name: Release
+
+# Same flow as the other repos in the harness: pushing a v*.*.* tag turns the
+# matching CHANGELOG section into a GitHub Release. There is nothing to publish
+# here (no registry), so unlike the Node plugins this stops at the Release.
+# workflow_dispatch exists only to release a tag that was pushed before this
+# workflow did: it runs the very same steps against that tag.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, for example v1.2.3"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check the tag matches the project version
+        run: |
+          version="${TAG#v}"
+          declared="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n1)"
+          test "$declared" = "$version" || { echo "tag $TAG but pyproject.toml says $declared" >&2; exit 1; }
+
+      - name: Extract changelog section
+        run: |
+          version="${TAG#v}"
+          awk -v ver="$version" '
+            /^## \[/ { if (found) exit; if (index($0, "[" ver "]")) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          body_path: release-notes.md
+          generate_release_notes: true

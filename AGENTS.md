@@ -249,7 +249,11 @@ No PyPI, no registry: `pip install "dagster-magento[xlsx] @ git+https://github.c
    hour and a half; do not run other live work meanwhile, and keep other
    govard sessions off the machine.
 3. Commit, then `git tag vX.Y.Z` and `git push origin master vX.Y.Z` after
-   approval.
+   approval. Pushing the tag runs `.github/workflows/release.yml`, the same flow
+   as the other repos in the harness: it checks the tag against `pyproject.toml`,
+   turns the matching CHANGELOG section into the GitHub Release, and fails if the
+   section is missing. To release a tag pushed before that workflow existed, run it
+   by hand: `gh workflow run release.yml -R ddtcorex/dagster-magento -f tag=vX.Y.Z`.
 4. Verify the README install command from a clean environment before calling
    the release done; it shipped wrong once already.
 
