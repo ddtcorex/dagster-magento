@@ -97,10 +97,10 @@ Message: `Error ratio 12.50% (5 failed of 40) exceeds fail_on_error_ratio=5.00%`
 The ratio is applied in two places, both defaulting to `None`:
 
 1. Every importer takes `fail_on_error_ratio` and checks it before returning.
-   `import_categories` checks it after its first pass, before the
-   `default_sort_by` retry, so on 2.4.6 it can raise over rows the retry would
-   have fixed, and the merged result is not checked again. It logs `Magento import result: {...}` first, so the counts are in the run
-   log even when it raises.
+   `import_categories` checks it once, on the result merged with its
+   `default_sort_by` retry, so a row the retry repairs on 2.4.6 never counts as
+   a failure. It logs `Magento import result: {...}` first, so the counts are
+   in the run log even when it raises.
 2. `to_materialize_result(result, fail_on_error_ratio=None)` builds a
    `MaterializeResult(metadata=result.to_metadata())`, logs the counts, then
    checks. If it raises, the asset fails and the metadata is not attached;

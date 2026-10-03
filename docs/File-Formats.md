@@ -51,11 +51,12 @@ with the install hint.
 
 ### JSON values must be strings
 
-The mappers strip every cell with `.strip()`, so they expect string values,
-which is what csv and xlsx always yield. A JSON number (`"price": 9.5`) raises
-`AttributeError` out of the mapper instead of becoming a row error. When your
-JSON is already shaped like the row models, skip the mappers and pass the
-objects straight to the importer:
+The mappers expect string cells, which is what csv and xlsx yield, so the json
+reader converts every scalar to the text a csv cell would hold: `9.5` becomes
+`"9.5"`, `12.0` becomes `"12"`, `true` and `false` become `"1"` and `"0"`,
+`null` becomes `""`, and a nested list or object becomes its json text (which
+the mapper then reports as a bad cell). When your JSON is already shaped like
+the row models, skip the mappers and pass the objects straight to the importer:
 
 ```python
 import json
@@ -88,11 +89,12 @@ Row references in errors are `line <n>: <id>` (`line 12: TSHIRT-RED-S`) or
 `line <n>` when the id column is empty.
 
 Blank cells are skipped by the product and category mappers: a blank cell never
-sets a field, so it cannot clear a value in Magento. Two exceptions send a value
+sets a field, so it cannot clear a value in Magento. One exception sends a value
 anyway: an empty value inside `additional_attributes` (`code=` or a bare `code`)
 is sent as the empty string, which clears a text attribute and, for a select
-attribute, would try to create an option with an empty label; and in a source
-item file a blank `quantity` or `status` becomes `0` (out of stock).
+attribute, would try to create an option with an empty label. The source item
+mapper is stricter: a blank `quantity` or `status` is a row error
+(`quantity is empty`), never a silent `0`.
 
 ## Products: products_from_rows
 
@@ -239,11 +241,9 @@ column. Paths are matched as described in
 - The same source in several columns becomes one `Image` with several roles;
   its label comes from the first role column that has one.
 - `additional_images` and `additional_image_labels` are comma separated (no
-  quoting) and paired by index after empty labels are removed, so a blank label
-  in the middle shifts every later label onto the wrong image (`a,b,c` with
-  labels `A,,C` pairs `b` with `C` and `c` with none). Labels are half of the
-  media identity, so a shift deletes and re-uploads images. A source already seen
-  keeps its earlier label when it has one.
+  quoting) and paired by original position, so a blank label keeps its slot
+  (`a,b,c` with labels `A,,C` gives `a` the label `A`, `b` none and `c` the label
+  `C`). A source already seen keeps its earlier label when it has one.
 - Positions are 1, 2, 3, ... in order of first appearance: base, small,
   thumbnail, swatch, then additional images.
 - A source is kept as written: an `http://` or `https://` URL is downloaded by
@@ -281,11 +281,9 @@ or a store-view override.
   is an error `store-view row for unknown sku (store_view_code=<code>)`.
 - In the fold, `name`, `status` (from `product_online`) and `visibility` stay
   top-level keys of the entry; `additional_attributes` and plain columns are
-  merged in. Every other parsed column (`price`, `categories`,
-  `product_websites`, images, ...) also lands in the entry under its model
-  field name, and the writer then looks each one up as an attribute code, which
-  fails the whole SKU, global row included, with `unknown attribute: <field>`:
-  keep store-view rows to localized columns.
+  merged in. Every other parsed column (`price`, `weight`, `categories`,
+  `product_websites`, images, ...) is global, so it is ignored on a store-view
+  row with one warning per row that names the columns.
 - A second row for the same SKU and store code replaces the first.
 
 ```csv
@@ -390,8 +388,8 @@ eu-warehouse,TSHIRT-RED-S,1,4
 | --- | --- |
 | `sku` | `sku` |
 | `source_code` | `source_code` |
-| `quantity` | `quantity` (float; blank becomes 0) |
-| `status` | `status` (integer; blank becomes 0, out of stock) |
+| `quantity` | `quantity` (float; blank is a row error) |
+| `status` | `status` (integer; blank is a row error) |
 
 A non-numeric value is a row error with Python's parse message; a `status`
 other than 0 or 1 fails model validation.
@@ -426,14 +424,8 @@ source item file are created as `SourceRow`s.
   Deduplicate before importing.
 - `product_online` values other than `1` and `0` are ignored silently (the
   extended sample file uses `2` in places).
-- A store-view row that carries a non-localized column the native export does
-  include (`attribute_set_code`, `product_type`, `categories`, `product_websites`,
-  images, ...) fails the whole product, global row included, with
-  `unknown attribute: <field>` (tested with an `fr` row carrying
-  `attribute_set_code` and `product_type`). Strip such columns from store rows.
-- The category yes/no columns accept only `yes` (any case): `1` or `true` means
-  `0`, so a file that writes `is_active=1` deactivates every category and removes
-  it from the menu.
+- The category yes/no columns accept `yes`, `1` and `true` for 1 and `no`, `0`
+  and `false` for 0 (any case). Any other value is a row error naming the column.
 - `additional_images`, `additional_image_labels` and `categories` cannot hold
   values containing commas.
 - `|` inside a value of `configurable_variations`, `bundle_values` or
