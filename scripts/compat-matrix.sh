@@ -4,7 +4,7 @@
 #
 # Usage: scripts/compat-matrix.sh [--versions 2.4.6-p15,2.4.7-p10,2.4.8-p5,2.4.9] [--write] [--dry-run]
 #   --versions  comma separated list, run in the order given
-#   --write     regenerate the README compatibility table from compat/results/
+#   --write     regenerate the results table in docs/Compatibility.md from compat/results/
 #   --dry-run   print the plan and touch nothing
 #
 # A version that cannot be provisioned is recorded as "not provisioned" with
@@ -45,7 +45,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
   for version in "${VERSION_LIST[@]}"; do
     echo "would run $version"
   done
-  [[ "$WRITE" == 1 ]] && echo "would write the README table"
+  [[ "$WRITE" == 1 ]] && echo "would write the results table"
   exit 0
 fi
 
@@ -178,7 +178,7 @@ if [[ "${VERSION_LIST[-1]}" != "$DEFAULT_VERSION" ]]; then
 fi
 
 if [[ "$WRITE" == 1 ]]; then
-  "$PYTHON" "$SCRIPT_DIR/compat_record.py" table --results "$RESULTS_DIR" --readme "$REPO_ROOT/README.md" \
+  "$PYTHON" "$SCRIPT_DIR/compat_record.py" table --results "$RESULTS_DIR" --readme "$REPO_ROOT/docs/Compatibility.md" \
     || FAILURES=$((FAILURES + 1))
 fi
 

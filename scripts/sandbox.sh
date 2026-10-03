@@ -15,6 +15,7 @@
 #   scripts/sandbox.sh cron-run                 # run bin/magento cron:run twice
 #   scripts/sandbox.sh bridge                   # enable the optional bridge checkout again
 #   scripts/sandbox.sh bridge-off               # disable it, to prove the native fallback
+#   scripts/sandbox.sh deploy-mode <mode>       # switch to developer or production mode
 #
 # `up` also writes the two settings the async bulk path needs, both into
 # app/etc/env.php: cron_consumers_runner (no cron-managed consumers) and a
@@ -387,7 +388,7 @@ main() {
     env) cmd_env "$@" ;;
     *)
       cat >&2 <<USAGE
-Usage: $(basename "$0") <up|down|reset|consumers|env|cron-run|deploy-mode> [options]
+Usage: $(basename "$0") <up|down|reset|consumers|env|cron-run|bridge|bridge-off|deploy-mode> [options]
   up [--version V]     bootstrap a fresh Magento sandbox (default version $DEFAULT_VERSION)
   down                 stop containers, keep volumes
   reset [--version V]  down -v, then up again with a fresh database

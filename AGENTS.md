@@ -241,21 +241,38 @@ consecutive-failure circuit breaker if it ever bites a real consumer.
 
 No PyPI, no registry: `pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@vX.Y.Z"`.
 
-1. Update `CHANGELOG.md` and bump `version` in `pyproject.toml`.
+1. Update `CHANGELOG.md`, bump `version` in `pyproject.toml`, and move the
+   `@vX.Y.Z` pin in the README install command to the new tag.
 2. `.venv/bin/pytest -q` and `.venv/bin/pytest -m samples -q` must be green.
    Run `scripts/compat-matrix.sh --write` and commit the new `compat/results/`
-   records and the regenerated README table: a release never states a Magento
+   records and the regenerated results table in `docs/Compatibility.md`: a release never states a Magento
    line that has no current row. The matrix owns the sandbox for about an
    hour and a half; do not run other live work meanwhile, and keep other
    govard sessions off the machine.
-3. Commit, then `git tag vX.Y.Z` and `git push origin master vX.Y.Z` after
-   approval. Pushing the tag runs `.github/workflows/release.yml`, the same flow
+3. Commit, then `git tag vX.Y.Z` and `git push origin vX.Y.Z` after the
+   release PR is merged and approved (never push `master`). Pushing the tag runs `.github/workflows/release.yml`, the same flow
    as the other repos in the harness: it checks the tag against `pyproject.toml`,
    turns the matching CHANGELOG section into the GitHub Release, and fails if the
    section is missing. To release a tag pushed before that workflow existed, run it
    by hand: `gh workflow run release.yml -R ddtcorex/dagster-magento -f tag=vX.Y.Z`.
 4. Verify the README install command from a clean environment before calling
    the release done; it shipped wrong once already.
+
+## Docs and wiki
+
+The user documentation is the wiki. Its source is `docs/`: flat markdown, one
+file per page named `Page-Name.md`, links written `[Text](Page-Name)`, plus
+`_Sidebar.md` and `_Footer.md`. A change to `docs/**` reaches the GitHub wiki
+through `.github/workflows/sync-wiki.yml` when it lands on `master`; the sync
+replaces the whole wiki, so never edit the wiki by hand. `scripts/check-docs.sh`
+(also run by `tests/test_docs.py` and by the workflow) fails on a missing `Home.md`,
+a link to a page that does not exist, or a non-markdown file. The wiki repository
+must have been created once by saving a first page on the wiki tab.
+
+`README.md` stays basic: what it is, install, a quick start, links to the wiki.
+Put anything longer in `docs/`. The compatibility results table is generated into
+`docs/Compatibility.md` by `scripts/compat-matrix.sh --write`; do not edit it by
+hand. A behaviour change updates the page that documents it in the same PR.
 
 ## Privacy gate
 
