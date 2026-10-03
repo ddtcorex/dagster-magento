@@ -840,3 +840,14 @@ def test_attributes_rows_map_flags_onto_the_rest_attribute_shape():
     assert attributes[1].flags == {}
     # One warning per dropped column, not per row.
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("blank", ["quantity", "status"])
+def test_source_items_blank_quantity_or_status_is_a_row_error(blank):
+    row = {"sku": "A", "source_code": "default", "quantity": "5", "status": "1", blank: "  "}
+
+    items, errors = catalog.source_items_from_rows([(2, row)])
+
+    assert items == []
+    assert [error.row_ref for error in errors] == ["line 2: A"]
+    assert blank in errors[0].message

@@ -727,6 +727,15 @@ def prices_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[PriceRow], 
 # -- MSI source items -------------------------------------------------------------
 
 
+def _required_cell(row: dict[str, str], column: str) -> str:
+    """A blank cell is an error, never a silent 0: for a source item that
+    would put the SKU out of stock."""
+    value = (row.get(column) or "").strip()
+    if not value:
+        raise ValueError(f"{column} is empty")
+    return value
+
+
 def source_items_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[SourceItemRow], list[RowError]]:
     """Map cataloginventory_source_item.csv rows onto SourceItemRow."""
     items: list[SourceItemRow] = []
@@ -736,8 +745,8 @@ def source_items_from_rows(rows: Rows, warn=_LOGGER.warning) -> tuple[list[Sourc
         source_code = (row.get("source_code") or "").strip()
         ref = sku or source_code or f"line {line}"
         try:
-            quantity = float((row.get("quantity") or "0").strip() or "0")
-            status = int((row.get("status") or "0").strip() or "0")
+            quantity = float(_required_cell(row, "quantity"))
+            status = int(_required_cell(row, "status"))
         except ValueError as error:
             errors.append(RowError(row_ref=f"line {line}: {ref}", message=str(error)))
             continue
