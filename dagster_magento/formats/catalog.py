@@ -455,6 +455,19 @@ def _category_date(value: str) -> str:
         return value
 
 
+_FLAG_TRUE = frozenset({"yes", "1", "true"})
+_FLAG_FALSE = frozenset({"no", "0", "false"})
+
+
+def _category_flag(column: str, value: str) -> int:
+    lowered = value.lower()
+    if lowered in _FLAG_TRUE:
+        return 1
+    if lowered in _FLAG_FALSE:
+        return 0
+    raise ValueError(f"{column}: expected yes, no, 1, 0, true or false, got {value!r}")
+
+
 def _parse_category_fields(row: dict[str, str], warn, dropped_seen: set[str]) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
     for column, raw_value in row.items():
@@ -465,7 +478,7 @@ def _parse_category_fields(row: dict[str, str], warn, dropped_seen: set[str]) ->
             _warn_once(column, warn, dropped_seen)
             continue
         if column in _CATEGORY_YES_NO:
-            attributes[column] = 1 if value.lower() == "yes" else 0
+            attributes[column] = _category_flag(column, value)
         elif column in _CATEGORY_LABELS:
             attributes[column] = _CATEGORY_LABELS[column].get(value.lower(), value)
         elif column in _CATEGORY_DATES:
@@ -509,7 +522,11 @@ def categories_from_rows(
         if store_view.lower() not in global_codes:
             store_rows.append((line, path, store_view, rest))
             continue
-        attributes = _parse_category_fields(rest, warn, dropped_seen)
+        try:
+            attributes = _parse_category_fields(rest, warn, dropped_seen)
+        except ValueError as error:
+            errors.append(RowError(row_ref=f"line {line}: {path}", message=str(error)))
+            continue
         category = _validate_row(CategoryRow, {"path": path, "attributes": attributes}, line, path, errors)
         if category is None:
             continue
@@ -525,7 +542,10 @@ def categories_from_rows(
                 )
             )
             continue
-        categories[path].store_values[store_view] = _parse_category_fields(rest, warn, dropped_seen)
+        try:
+            categories[path].store_values[store_view] = _parse_category_fields(rest, warn, dropped_seen)
+        except ValueError as error:
+            errors.append(RowError(row_ref=f"line {line}: {path}", message=str(error)))
 
     return [categories[path] for path in order], errors
 

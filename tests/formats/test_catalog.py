@@ -851,3 +851,21 @@ def test_source_items_blank_quantity_or_status_is_a_row_error(blank):
     assert items == []
     assert [error.row_ref for error in errors] == ["line 2: A"]
     assert blank in errors[0].message
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [("yes", 1), ("Yes", 1), ("1", 1), ("true", 1), ("no", 0), ("0", 0), ("False", 0)],
+)
+def test_category_flags_accept_yes_no_one_zero_true_false(text, expected):
+    categories, errors = catalog.categories_from_rows([(2, {"name": "Men", "is_active": text})])
+
+    assert errors == []
+    assert categories[0].attributes["is_active"] == expected
+
+
+def test_category_flag_with_an_unknown_value_is_a_row_error():
+    categories, errors = catalog.categories_from_rows([(2, {"name": "Men", "is_anchor": "maybe"})])
+
+    assert categories == []
+    assert "is_anchor" in errors[0].message
