@@ -5,6 +5,22 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- The documentation moved to the GitHub wiki. Its source is `docs/` (flat markdown,
+  one file per page), published by `.github/workflows/sync-wiki.yml` when it lands
+  on `master`, checked by `scripts/check-docs.sh` and `tests/test_docs.py`. The
+  README is now short: what it is, install, a quick start and links.
+- The compatibility results table is generated into `docs/Compatibility.md`
+  instead of the README (`scripts/compat-matrix.sh --write`).
+
+### Fixed
+
+- `compat_record.py table` no longer rewrites a page from a marker quoted inside a
+  sentence: a marker only counts when it stands alone on its line.
+- The usage text of `scripts/sandbox.sh` lists `bridge`, `bridge-off` and
+  `deploy-mode`.
+
 ## [0.4.0] - 2026-10-02
 
 ### Changed

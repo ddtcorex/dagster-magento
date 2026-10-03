@@ -1,0 +1,52 @@
+name: Sync Wiki
+
+# The wiki pages are the markdown files directly under docs/ (flat, one file per
+# page, links written [Text](Page-Name)). Edit them in a pull request; this
+# workflow publishes them to the GitHub wiki when they reach master. Anything
+# edited by hand on the wiki is overwritten on the next sync.
+#
+# The wiki git repository only exists after one page has been created on the
+# wiki tab by hand; do that once, the first sync replaces it.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "docs/**"
+      - ".github/workflows/sync-wiki.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-wiki
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the pages
+        run: scripts/check-docs.sh docs
+
+      - name: Publish to the wiki
+        env:
+          WIKI_REPO: "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git"
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git clone "$WIKI_REPO" /tmp/wiki
+          find /tmp/wiki -mindepth 1 -not -path '/tmp/wiki/.git*' -delete
+          cp docs/*.md /tmp/wiki/
+          cd /tmp/wiki
+          git add -A
+          if git diff --cached --quiet; then
+            echo "The wiki is already up to date."
+            exit 0
+          fi
+          git commit -m "docs: sync the wiki from ${GITHUB_SHA::7}"
+          git push

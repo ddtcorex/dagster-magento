@@ -2,7 +2,7 @@
 
 Used by scripts/compat-matrix.sh: a pytest JUnit file plus the facts read
 from the sandbox become one JSON record per Magento version, and the records
-render into the README compatibility table.
+render into the results table of docs/Compatibility.md.
 """
 
 import argparse
@@ -86,14 +86,16 @@ def render_table(records: list[dict]) -> str:
 
 
 def write_table(readme_path: str, table: str) -> None:
+    """Replace what sits between the two markers. A marker only counts when it
+    stands alone on its line, so a page can quote the marker text in a sentence."""
     with open(readme_path) as handle:
         text = handle.read()
-    start, end = text.find(START_MARKER), text.find(END_MARKER)
-    if start == -1 or end == -1 or end < start:
-        raise ValueError(f"{readme_path} needs both {START_MARKER} and {END_MARKER}")
-    head = text[: start + len(START_MARKER)]
+    start = re.search(rf"^{re.escape(START_MARKER)}[ \t]*$", text, re.MULTILINE)
+    end = re.search(rf"^{re.escape(END_MARKER)}[ \t]*$", text, re.MULTILINE)
+    if start is None or end is None or end.start() < start.end():
+        raise ValueError(f"{readme_path} needs {START_MARKER} and {END_MARKER} each on a line of its own")
     with open(readme_path, "w") as handle:
-        handle.write(f"{head}\n{table}\n{text[end:]}")
+        handle.write(f"{text[: start.end()]}\n{table}\n{text[end.start():]}")
 
 
 def _latest_per_version(results_dir: str) -> list[dict]:
@@ -142,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--out", required=True)
     record.set_defaults(func=_cmd_record)
 
-    table = commands.add_parser("table", help="render the newest record per version into a README")
+    table = commands.add_parser("table", help="render the newest record per version into a page between its markers")
     table.add_argument("--results", required=True)
     table.add_argument("--readme", required=True)
     table.set_defaults(func=_cmd_table)

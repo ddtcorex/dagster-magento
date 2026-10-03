@@ -146,3 +146,28 @@ def test_render_table_sorts_patch_versions_by_line_then_patch():
     assert [line.split("|")[1].strip() for line in lines[2:]] == [
         "2.4.6-p15", "2.4.7-p9", "2.4.7-p10", "2.4.8-p5", "2.4.9",
     ]
+
+
+def test_write_table_ignores_markers_quoted_inside_a_sentence(tmp_path):
+    """A page that explains the markers in prose must not be rewritten from the
+    quoted mention: only a marker alone on its line counts."""
+    page = tmp_path / "Compatibility.md"
+    page.write_text(
+        "Rows sit between `<!-- compat:start -->` and `<!-- compat:end -->` markers.\n"
+        "\n"
+        "<!-- compat:start -->\n"
+        "old\n"
+        "<!-- compat:end -->\n"
+        "tail\n"
+    )
+
+    compat_record.write_table(str(page), "| new |")
+
+    assert page.read_text() == (
+        "Rows sit between `<!-- compat:start -->` and `<!-- compat:end -->` markers.\n"
+        "\n"
+        "<!-- compat:start -->\n"
+        "| new |\n"
+        "<!-- compat:end -->\n"
+        "tail\n"
+    )
