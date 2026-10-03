@@ -259,6 +259,9 @@ def sandbox_facts() -> dict:
     )
     raw = json.loads(next(line for line in reversed(output.splitlines()) if line.startswith("{")))
     govard_yml = (SANDBOX_PROJECT / ".govard.yml").read_text()
+    # Engine and version both come from govard: Magento's engine setting can name
+    # opensearch on a 2.4.6 sandbox whose search container is Elasticsearch 7.17.
+    search_engine = govard_setting(govard_yml, "search") or raw["engine"]
     search_version = govard_setting(govard_yml, "search_version")
     try:
         bridge = str(make_resource().get("dagster-bridge/capabilities").get("version", "unknown"))
@@ -277,6 +280,6 @@ def sandbox_facts() -> dict:
         "magento": raw["magento"],
         "php": raw["php"],
         "database": normalize_database(raw["database"]),
-        "search": f"{raw['engine']} {search_version}" if search_version else raw["engine"],
+        "search": f"{search_engine} {search_version}" if search_version else search_engine,
         "bridge": bridge,
     }

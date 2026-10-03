@@ -93,3 +93,26 @@ def test_an_unreachable_store_is_an_unknown_bridge(monkeypatch, tmp_path):
         raise requests.exceptions.ConnectionError("no route")
 
     assert _facts_with_bridge(monkeypatch, tmp_path, get)["bridge"] == "unknown (connection failed)"
+
+
+def test_search_engine_and_version_come_from_the_same_govard_setting(monkeypatch, tmp_path):
+    """The engine name and its version must describe the same service: Magento's
+    own engine setting can say 'opensearch' on a 2.4.6 sandbox that runs
+    Elasticsearch 7.17, so the pair is read from govard, not mixed."""
+    (tmp_path / ".govard.yml").write_text(
+        'stack:\n    search_version: "7.17.28"\n    services:\n        search: elasticsearch\n'
+    )
+    monkeypatch.setattr(live_support, "SANDBOX_PROJECT", tmp_path)
+    monkeypatch.setattr(
+        live_support,
+        "govard_php",
+        lambda body: '{"magento":"2.4.6-p15","php":"8.2.26","database":"10.11.18-MariaDB","engine":"opensearch"}\n',
+    )
+
+    class Resource:
+        def get(self, endpoint):
+            return {"version": "1.0.0"}
+
+    monkeypatch.setattr(live_support, "make_resource", lambda: Resource())
+
+    assert live_support.sandbox_facts()["search"] == "elasticsearch 7.17.28"
