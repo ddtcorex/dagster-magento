@@ -8,7 +8,7 @@ capability at a time. This page describes the bridge from the library's side:
 the `BridgeClient`, the capability probe, exactly what each capability replaces
 on the native path, the `use_bridge` modes and how failures behave. Installing
 and configuring the module itself is covered in the
-[module wiki](https://github.com/ddtcorex/module-dagster-bridge/wiki). All
+[module documentation](https://github.com/ddtcorex/module-dagster-bridge/blob/master/docs/README.md). All
 statements were checked against `dagster_magento/bridge.py`, `diff.py`,
 `resolvers.py`, `importers.py` and `tests/test_bridge.py` at version 0.4.0.
 
@@ -182,7 +182,7 @@ are POSTs, which the resource retries on 429 only.
 
 The module is installed into Magento, not into Python. Installation,
 supported Magento versions, ACL and upgrade notes live in the
-[module wiki](https://github.com/ddtcorex/module-dagster-bridge/wiki). From the
+[module documentation](https://github.com/ddtcorex/module-dagster-bridge/blob/master/docs/README.md). From the
 library's side the only requirements are that the three endpoints above are
 reachable for the admin user the `MagentoResource` logs in with, and that the
 capabilities endpoint lists what the module offers.
@@ -231,4 +231,4 @@ capabilities endpoint lists what the module offers.
 - [Compatibility](Compatibility)
 - [Troubleshooting](Troubleshooting)
 - [Results and Errors](Results-and-Errors)
-- [Module wiki](https://github.com/ddtcorex/module-dagster-bridge/wiki)
+- [Module documentation](https://github.com/ddtcorex/module-dagster-bridge/blob/master/docs/README.md)
