@@ -3,7 +3,7 @@ import logging
 import pytest
 import requests
 
-from dagster_magento.upload import UploadResult, chunk_rows, run_upload
+from dagster_magento.upload import DeleteMissingOutcome, UploadResult, chunk_rows, run_upload
 
 
 def test_chunk_rows_splits_into_groups_of_the_given_size():
@@ -94,4 +94,47 @@ def test_run_upload_includes_response_body_in_error_message():
 
 def test_upload_result_to_metadata():
     result = UploadResult(succeeded=10, failed=2, errors=[{"chunk_index": 0, "row_ids": ["X"], "status_code": 400, "message": "m"}])
-    assert result.to_metadata() == {"succeeded": 10, "failed": 2, "pending": 0, "skipped_unchanged": 0, "error_count": 1}
+    assert result.to_metadata() == {
+        "succeeded": 10,
+        "failed": 2,
+        "pending": 0,
+        "skipped_unchanged": 0,
+        "error_count": 1,
+        "delete_would": 0,
+        "delete_deleted": 0,
+    }
+
+
+# -- delete_missing outcome -----------------------------------------------------
+
+
+def test_upload_result_carries_the_delete_outcome():
+    outcome = DeleteMissingOutcome(mode="preview", would_delete=("A", "B"))
+
+    result = UploadResult(succeeded=1, failed=0, delete_missing=outcome)
+
+    assert result.delete_missing is outcome
+    assert result.to_metadata()["delete_would"] == 2
+    assert result.to_metadata()["delete_deleted"] == 0
+
+
+def test_upload_result_without_a_delete_outcome_reports_zero_counts():
+    assert UploadResult(succeeded=1, failed=0).to_metadata()["delete_would"] == 0
+
+
+def test_merge_carries_a_delete_outcome():
+    outcome = DeleteMissingOutcome(mode="execute", would_delete=("A",), deleted=("A",))
+
+    merged = UploadResult(succeeded=1, failed=0).merge(
+        UploadResult(succeeded=0, failed=0, delete_missing=outcome)
+    )
+
+    assert merged.delete_missing is outcome
+
+
+def test_merge_refuses_two_delete_outcomes():
+    """A run deletes once; two outcomes mean a caller wired it wrong."""
+    with pytest.raises(ValueError, match="two delete_missing outcomes"):
+        UploadResult(succeeded=0, failed=0, delete_missing=DeleteMissingOutcome(mode="preview")).merge(
+            UploadResult(succeeded=0, failed=0, delete_missing=DeleteMissingOutcome(mode="preview"))
+        )
