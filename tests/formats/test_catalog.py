@@ -1,6 +1,7 @@
 import pytest
 
 from dagster_magento.formats import catalog
+from dagster_magento.formats.readers import read_rows
 
 
 def _warn_spy():
@@ -919,3 +920,47 @@ def test_store_view_row_keeps_only_localized_values_and_warns_once():
     assert products[0].price == 10
     assert len(calls) == 1
     assert "fr" in calls[0] and "price" in calls[0] and "categories" in calls[0]
+
+
+# -- the xml container is the csv container ------------------------------------
+
+XML_CATALOG = """<?xml version="1.0" encoding="UTF-8"?>
+<export>
+  <product>
+    <row>
+      <field name="sku">EQ-1</field>
+      <field name="type">simple</field>
+      <field name="name">Equivalent</field>
+      <field name="price">9.5</field>
+      <field name="status">enabled</field>
+      <field name="url_key">equivalent</field>
+      <field name="categories">Default/One, Default/Two</field>
+      <field name="additional_attributes">colour=Blue</field>
+    </row>
+  </product>
+</export>
+"""
+
+CSV_CATALOG = (
+    "sku,type,name,price,status,url_key,categories,additional_attributes\n"
+    'EQ-1,simple,Equivalent,9.5,enabled,equivalent,"Default/One, Default/Two",colour=Blue\n'
+)
+
+
+def test_xml_and_csv_produce_the_same_product(tmp_path):
+    """One column vocabulary: the same catalog in two containers, one model.
+
+    This is what keeps `formats/catalog.py` free of an xml branch honest. A
+    change to the csv mapping cannot pass while the xml path drifts.
+    """
+    xml_path = tmp_path / "products.xml"
+    xml_path.write_text(XML_CATALOG, encoding="utf-8")
+    csv_path = tmp_path / "products.csv"
+    csv_path.write_text(CSV_CATALOG, encoding="utf-8")
+
+    xml_products, xml_errors = catalog.products_from_rows(read_rows(xml_path))
+    csv_products, csv_errors = catalog.products_from_rows(read_rows(csv_path))
+
+    assert xml_errors == []
+    assert csv_errors == []
+    assert [row.model_dump() for row in xml_products] == [row.model_dump() for row in csv_products]
