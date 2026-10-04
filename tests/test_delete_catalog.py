@@ -11,9 +11,12 @@ import pytest
 from dagster_magento.catalog import (
     candidates_for_delete,
     delete_candidates,
+    delete_operations,
+    guard_execute,
     missing_skus,
     order_for_delete,
 )
+from dagster_magento.upload import DeleteMissingOutcome
 
 
 class _StubResource:
@@ -298,3 +301,80 @@ def test_delete_candidates_uses_rest_for_any_scope_not_only_a_category_one():
 
     assert catalog["A"]["attribute_set_id"] == 9
     assert resource.calls, "a scope has to read the REST listing"
+
+
+# -- planning and executing the deletes ----------------------------------------
+
+
+def test_delete_operations_build_one_delete_per_sku_in_order():
+    operations = delete_operations(
+        ("CHILD", "PARENT"), {"CHILD": {"type_id": "simple"}, "PARENT": {"type_id": "configurable"}}
+    )
+
+    assert [(op.method, op.endpoint) for op in operations] == [
+        ("DELETE", "products/CHILD"),
+        ("DELETE", "products/PARENT"),
+    ]
+    assert operations[0].store_code == "default"
+    # A delete carries no row of its own: the row that used to exist is the
+    # thing that is gone, so attaching row_refs would inflate the counts
+    # _fold_by_row reports for the import.
+    assert operations[0].row_refs == ()
+
+
+def test_delete_operations_carry_the_caller_store_code():
+    operations = delete_operations(("A",), {}, store_code="de")
+
+    assert operations[0].store_code == "de"
+
+
+def test_delete_operations_of_nothing_plan_nothing():
+    assert delete_operations((), {}) == []
+
+
+def test_guard_execute_sends_nothing_in_preview():
+    calls = []
+
+    outcome = guard_execute(("A", "B"), "preview", _Recorder(calls))
+
+    assert calls == [], "a preview must not touch Magento at all"
+    assert outcome == DeleteMissingOutcome(mode="preview", would_delete=("A", "B"))
+
+
+def test_guard_execute_deletes_in_execute():
+    recorder = _Recorder([])
+
+    outcome = guard_execute(("A",), "execute", recorder)
+
+    assert recorder.deleted == ["A"]
+    assert outcome == DeleteMissingOutcome(mode="execute", would_delete=("A",), deleted=("A",))
+
+
+def test_guard_execute_reports_a_failed_delete_without_raising():
+    class _Failing(_Recorder):
+        def delete(self, sku, store_code=None):
+            self.attempts.append(sku)
+            self.deleted.append(sku)
+            raise RuntimeError("product is locked")
+
+    outcome = guard_execute(("A",), "execute", _Failing([]))
+
+    assert outcome.failed == ("A",)
+    assert outcome.deleted == ()
+
+
+def test_guard_execute_rejects_an_unknown_mode():
+    with pytest.raises(ValueError, match="mode must be 'preview' or 'execute'"):
+        guard_execute(("A",), "dry", _Recorder([]))
+
+
+class _Recorder:
+    def __init__(self, calls):
+        self.calls = calls
+        self.attempts = []
+        self.deleted = []
+
+    def delete(self, sku, store_code=None):
+        self.attempts.append(sku)
+        self.deleted.append(sku)
+        self.calls.append(sku)

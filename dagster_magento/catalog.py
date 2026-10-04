@@ -6,13 +6,16 @@ rows of the file is structurally empty and a delete built on it could never
 fire. This module owns the full listing and the pure functions on top of it,
 kept apart from `diff.py` so both can be tested against a stub.
 
-Nothing here sends anything. A listing read is a read; the deletes are built
-by `delete_operations` and executed by the importer.
+Nothing here sends anything through the executor. A listing read is a read;
+the operations are built by `delete_operations` and run by `guard_execute`,
+which is the only place in the delete path that touches Magento.
 """
 
 from dagster import get_dagster_logger
 
 from dagster_magento.executor import MagentoImportError
+from dagster_magento.operation import Operation
+from dagster_magento.upload import DeleteMissingOutcome
 
 # The three fields the whole feature reads: the identity, the type the delete
 # ordering needs, and the two a `delete_scope` filter can match on. A full
@@ -149,3 +152,64 @@ def order_for_delete(skus, catalog: dict):
         sku for sku in skus if catalog.get(sku, {}).get("type_id") in _PARENT_TYPES
     )
     return children + parents
+
+
+def delete_operations(skus, catalog: dict, store_code: str = "default") -> list:
+    """One DELETE operation per SKU, children before parents.
+
+    `row_refs` is empty on purpose. A delete has no row of its own, and
+    `_fold_by_row` counts per row_ref: attaching the vanishing SKU would
+    inflate the counts the importer reports for the rows the file did
+    contain.
+
+    The endpoint is built here rather than in the executor so the executor
+    stays the one place that decides how an Operation becomes HTTP, and a
+    SKU containing a slash or a space is rejected by Magento rather than
+    silently splitting the path.
+    """
+    return [
+        Operation(
+            method="DELETE",
+            endpoint=f"products/{sku}",
+            payload=None,
+            row_refs=(),
+            store_code=store_code,
+        )
+        for sku in order_for_delete(skus, catalog)
+    ]
+
+
+def guard_execute(skus, mode: str, deleter, store_code: str = "default") -> DeleteMissingOutcome:
+    """The mode guard: `preview` sends nothing, `execute` deletes.
+
+    Deleting a product is not reversible from this library, so preview is a
+    first-class outcome rather than a log line: it returns the exact set
+    `execute` would have removed, which is what makes the dry-run-then-
+    approve workflow possible at all.
+
+    A delete that raises is counted, not raised. One locked product must not
+    abort a run that has already removed a thousand others, and the caller's
+    error ratio needs the count to see it.
+    """
+    if mode not in ("preview", "execute"):
+        raise ValueError(f"mode must be 'preview' or 'execute', got {mode!r}")
+
+    candidates = tuple(skus)
+    if mode == "preview":
+        return DeleteMissingOutcome(mode="preview", would_delete=candidates)
+
+    logger = get_dagster_logger()
+    deleted: list[str] = []
+    failed: list[str] = []
+    for sku in candidates:
+        try:
+            deleter.delete(sku, store_code=store_code)
+        except Exception as error:  # noqa: BLE001 - one product must not abort the run
+            failed.append(sku)
+            logger.warning(f"delete {sku} failed: {error}")
+            continue
+        deleted.append(sku)
+
+    return DeleteMissingOutcome(
+        mode="execute", would_delete=candidates, deleted=tuple(deleted), failed=tuple(failed)
+    )
