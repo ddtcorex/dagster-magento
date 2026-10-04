@@ -10,7 +10,7 @@ on the native path, the `use_bridge` modes and how failures behave. Installing
 and configuring the module itself is covered in the
 [module documentation](https://github.com/ddtcorex/module-dagster-bridge/blob/master/docs/README.md). All
 statements were checked against `dagster_magento/bridge.py`, `diff.py`,
-`resolvers.py`, `importers.py` and `tests/test_bridge.py` at version 0.4.0.
+`resolvers.py`, `importers.py` and `tests/test_bridge.py` at version 0.4.1.
 
 ## Who uses it
 

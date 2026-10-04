@@ -5,7 +5,13 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-03
+
 ### Changed
+
+- Input that used to be accepted now fails the row: a blank source item `quantity` or
+  `status`, and a category yes/no column with a value other than yes, no, 1, 0, true or
+  false. A store-view row with non-localized columns no longer fails the SKU.
 
 - The documentation moved to the GitHub wiki. Its source is `docs/` (flat markdown,
   one file per page), published by `.github/workflows/sync-wiki.yml` when it lands

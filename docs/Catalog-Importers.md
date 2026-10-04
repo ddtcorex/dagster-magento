@@ -11,7 +11,7 @@ counts every input row exactly once as `succeeded`, `failed`, `pending` or
 `skipped_unchanged`. This page documents, per importer, what it reads, what it
 writes, which parameters it honours and when a row counts as unchanged. All
 statements below were checked against `dagster_magento/importers.py`,
-`writers/*`, `diff.py`, `resolvers.py` and `executor.py` at version 0.4.0.
+`writers/*`, `diff.py`, `resolvers.py` and `executor.py` at version 0.4.1.
 
 ## Common signature
 
