@@ -42,7 +42,13 @@ from dagster_magento.models import (
 )
 from dagster_magento.operation import RowError
 from dagster_magento.resolvers import ResolveError, Resolver
-from dagster_magento.upload import UploadResult
+from dagster_magento.upload import DeleteMissingOutcome, UploadResult
+from dagster_magento.catalog import (
+    candidates_for_delete,
+    delete_candidates,
+    guard_execute,
+    missing_skus,
+)
 from dagster_magento.writers import PlanResult
 from dagster_magento.writers.attribute_sets import plan_attribute_sets
 from dagster_magento.writers.attributes import plan_attributes
@@ -446,12 +452,31 @@ def import_products(
     behavior="upsert",
     fail_on_error_ratio=None,
     use_bridge: BridgeMode = "auto",
+    delete_missing: str | None = None,
+    delete_scope=None,
 ):
     """Snapshot existing SKUs, skip rows `product_matches_snapshot` proves
     unchanged (diff=True), plan, then execute the main and store-value
     product operations before the type follow-ups, because a configurable
     child must exist before it is linked. Images are out of scope here:
-    import_media owns them."""
+    import_media owns them.
+
+    `delete_missing` removes the products the catalog has and the rows do
+    not: "preview" names them and sends nothing, "execute" removes them.
+    `delete_scope` narrows the comparison to the category or attribute-set
+    ids the source file is authoritative for; without it the file is
+    authoritative for the whole catalog, which is the honest reading of a
+    full export and a data-loss hazard for a partial one."""
+    if delete_missing is not None:
+        # Both checked before anything is written. A scope this library
+        # cannot match, or a mode it does not know, is a caller mistake;
+        # finding it out after the import has already saved rows is the
+        # worst possible time.
+        candidates_for_delete({}, delete_scope)
+        if delete_missing not in ("preview", "execute"):
+            raise ValueError(
+                f"delete_missing must be 'preview' or 'execute', got {delete_missing!r}"
+            )
     valid, invalid = _validate(ProductRow, rows, "sku")
     bridge = _bridge(
         resource, use_bridge, (BridgeClient.PRODUCT_INDEX, BridgeClient.ATTRIBUTE_VALUES)
@@ -495,7 +520,78 @@ def import_products(
     ]
     follow_ups = _drop_attached_children(resource, follow_ups, existing=set(snapshot))
     result = result.merge(execute(resource, follow_ups, mode=mode))
-    return _complete([row.sku for row in changed], plan, result, invalid, skipped, fail_on_error_ratio)
+    folded = _complete([row.sku for row in changed], plan, result, invalid, skipped, fail_on_error_ratio)
+    if delete_missing is None:
+        return folded
+    return _delete_missing_products(
+        resource, valid, invalid, delete_missing, delete_scope, bridge, use_bridge, folded
+    )
+
+
+def _delete_missing_products(
+    resource,
+    valid,
+    invalid,
+    mode: str,
+    scope,
+    bridge,
+    use_bridge: BridgeMode,
+    folded: UploadResult,
+) -> UploadResult:
+    """Compare the whole catalog against the rows, and remove the difference.
+
+    The listing is read here and not before the import, so a failed import
+    still reports what it would have deleted instead of leaving the caller
+    to rerun the whole run to find out.
+
+    A SKU whose row failed validation is subtracted from the difference: it
+    is a product the caller is trying to repair, not one that went missing,
+    and deleting it would destroy exactly what the run is there to fix.
+    """
+    catalog = delete_candidates(
+        resource, bridge=bridge, require_bridge=use_bridge == "require", scope=scope
+    )
+    scoped = candidates_for_delete(catalog, scope)
+    candidates = missing_skus(
+        scoped, [row.sku for row in valid], invalid=[error.row_ref for error in invalid]
+    )
+    outcome = guard_execute(
+        candidates, mode, _ResourceDeleter(resource), store_code=resource.store_view
+    )
+    return _add_delete_failures(folded, outcome)
+
+
+class _ResourceDeleter:
+    """Sends one delete per SKU, in the order `guard_execute` was given.
+
+    A preview never reaches `delete`, which is what makes the mode guard
+    load bearing rather than a flag nobody reads.
+    """
+
+    def __init__(self, resource):
+        self._resource = resource
+
+    def delete(self, sku, store_code=None):
+        self._resource.delete(f"products/{sku}", store_code=store_code)
+
+
+def _add_delete_failures(folded: UploadResult, outcome: DeleteMissingOutcome) -> UploadResult:
+    """Attach the outcome and count its failures, without folding them in.
+
+    `merge` is wrong here: `_fold_by_row` counts per row_ref, and a delete
+    carries none, so merging a delete result would add successes and errors
+    the import never earned. Only the failures are added, because a caller
+    whose error ratio must see a product that could not be removed needs it
+    to see them.
+    """
+    return UploadResult(
+        succeeded=folded.succeeded,
+        failed=folded.failed + len(outcome.failed),
+        pending=folded.pending,
+        skipped_unchanged=folded.skipped_unchanged,
+        errors=folded.errors,
+        delete_missing=outcome,
+    )
 
 
 def _known_attribute(resolver, code: str) -> bool:
