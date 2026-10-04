@@ -11,7 +11,7 @@ counts every input row exactly once as `succeeded`, `failed`, `pending` or
 `skipped_unchanged`. This page documents, per importer, what it reads, what it
 writes, which parameters it honours and when a row counts as unchanged. All
 statements below were checked against `dagster_magento/importers.py`,
-`writers/*`, `diff.py`, `resolvers.py` and `executor.py` at version 0.4.1.
+`writers/*`, `diff.py`, `resolvers.py` and `executor.py` at version 0.5.0.
 
 ## Common signature
 
@@ -332,6 +332,67 @@ Downloadable and configurable parents are not in phase 1: downloadable links
 reference URLs, not SKUs, and configurable links are follow-ups. A child that
 is neither in this run nor already in Magento makes its parent's link or save
 fail with Magento's message.
+
+### delete_missing: remove what the file no longer lists
+
+`import_products` can, on request, treat the source file as authoritative for
+the catalog and remove the products it does not list. It is off by default and
+two-step on purpose: a product deleted from Magento is not restorable from
+this library.
+
+```python
+# 1. See what a run would remove. Sends nothing.
+preview = import_products(resource, products, delete_missing="preview")
+print(preview.delete_missing.would_delete)     # ('OLD-SKU', ...)
+
+# 2. Only when the list is what you expect.
+done = import_products(resource, products, delete_missing="execute")
+print(done.delete_missing.deleted, done.delete_missing.failed)
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `delete_missing` | `None` (default, never deletes and never lists), `"preview"` (names the candidates, sends nothing) or `"execute"` (removes them) |
+| `delete_scope` | `None` (default) or a non-empty set of category ids and/or attribute-set ids the file is authoritative for |
+
+How the candidates are computed:
+
+- The listing is read **after** the import, so a run that failed to save its
+  rows still reports what it would have deleted instead of making you rerun
+  the whole run to find out.
+- The difference is the whole catalog minus the SKUs of the valid rows, minus
+  the SKUs whose rows **failed validation**. That last subtraction matters:
+  a row you are trying to repair must never make its own SKU look vanished,
+  and deleting it would destroy exactly what the run exists to fix.
+- `delete_scope` narrows the comparison to products in those categories or on
+  those attribute sets. An attribute *code* scope is refused with
+  `ValueError`: the listing carries no per-SKU attribute values, so it could
+  only guess, and a filter that silently matches nothing reads as a clean run.
+- Both arguments are validated **before anything is written**, so a typo costs
+  nothing.
+
+Ordering and refusals:
+
+- Children are deleted before parents. Magento refuses to delete a
+  configurable or a bundle that still has children, so a run removing both
+  would otherwise fail on the parent. A SKU whose type the listing did not
+  carry is treated as a child: if Magento refuses it, it fails as one failed
+  row.
+- A delete that Magento refuses is **counted, not raised**: one locked
+  product does not abort a run that has already removed a thousand. The
+  failure count reaches `UploadResult.failed`, so `fail_on_error_ratio` sees
+  it.
+- A delete carries no `row_ref`, so it never inflates the `succeeded` and
+  `failed` counts of the rows the file did contain. It is reported only in
+  `delete_missing` and in the `delete_would` / `delete_deleted` metadata.
+
+`UploadResult.delete_missing` is a frozen `DeleteMissingOutcome`
+(`mode`, `would_delete`, `deleted`, `failed`), and the full lists are
+returned rather than a sample: truncating would make a preview unusable for
+the dry-run-then-approve workflow it exists for.
+
+Because the default is `None`, a run that does not ask for it issues **zero**
+listing requests: no extra `GET products`, no cost on a 100k-product store.
 
 ## import_prices
 

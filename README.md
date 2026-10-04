@@ -24,7 +24,7 @@ succeeded, failed or are still pending.
 Python 3.10 or newer. The package is installed from a git tag; it is not on PyPI.
 
 ```
-pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@v0.4.1"
+pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@v0.5.0"
 ```
 
 The `xlsx` extra adds `openpyxl`, needed only to read `.xlsx` files.
