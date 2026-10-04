@@ -132,18 +132,25 @@ def missing_skus(catalog, row_skus, invalid=()) -> tuple:
     return tuple(sorted(set(catalog) - set(row_skus) - set(invalid)))
 
 
-# Magento refuses to delete a configurable or a bundle that still has
-# children, so a run removing both has to remove the children first.
-_PARENT_TYPES = ("configurable", "bundle")
+# Composite types whose children reference them by SKU. Removing a child
+# first is the conventional order, and it is what keeps a run reproducible
+# and readable in the request log.
+#
+# It is NOT a requirement the store enforces: measured against Magento
+# 2.4.9, `DELETE /V1/products/<sku>` deletes a bundle or a grouped parent
+# with its children still attached, and the same holds for a configurable.
+# The ordering is therefore hygiene, not a guard that Magento would have
+# rejected the reverse of. See tests/live/test_live_delete_missing.py.
+_PARENT_TYPES = ("configurable", "bundle", "grouped")
 
 
 def order_for_delete(skus, catalog: dict):
     """Children before parents, sorted by SKU inside each partition.
 
     A run is reproducible because both partitions are sorted. A SKU the
-    listing could not type is treated as a child: if Magento refuses it, it
-    fails as one failed row and the error ratio reports it, which is better
-    than leaving it for last and guaranteeing the failure.
+    listing could not type is treated as a child: it is the conservative
+    placement, since a parent that is really a composite has to go last and
+    nothing is lost by assuming the weaker case.
     """
     children = sorted(
         sku for sku in skus if catalog.get(sku, {}).get("type_id") not in _PARENT_TYPES

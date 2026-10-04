@@ -195,7 +195,7 @@ class MagentoResource(ConfigurableResource):
                     f"found in response (keys: {list(response.keys())}) - stopping pagination"
                 )
                 break
-            page_items = response.get(response_key, [])
+            page_items = response.get(response_key) or []
             logger.info(f"Fetched page {page} of {endpoint} ({len(page_items)} items)")
             items.extend(page_items)
 
