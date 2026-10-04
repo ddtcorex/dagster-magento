@@ -77,10 +77,10 @@ The table sits between the two `compat:start` and `compat:end` comment markers (
 <!-- compat:start -->
 | Version | Magento patch | PHP | Database | Search | Bridge | Date | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2.4.6-p15 | 2.4.6-p15 | 8.2.26 | MariaDB 10.11.18 | elasticsearch 7.17.28 | 1.0.0 | 2026-10-03 | verified (15 of 15 passed) |
-| 2.4.7-p10 | - | - | - | - | - | 2026-09-30 | not provisioned: Composer security blocking refused a dependency of 2.4.7-p10 and govard bootstrap cannot disable it |
-| 2.4.8-p5 | 2.4.8-p5 | 8.4.1 | MariaDB 11.4.10 | opensearch 3.0 | 1.0.0 | 2026-10-02 | verified (15 of 15 passed) |
-| 2.4.9 | 2.4.9 | 8.5.9 | MariaDB 11.8.8 | opensearch 3.0 | 1.0.0 | 2026-10-02 | verified (15 of 15 passed) |
+| 2.4.6-p15 | 2.4.6-p15 | 8.2.26 | MariaDB 10.11.18 | elasticsearch 7.17.28 | 1.0.0 | 2026-10-04 | verified (15 of 15 passed) |
+| 2.4.7-p10 | - | - | - | - | - | 2026-10-04 | not provisioned: Composer security blocking refused a dependency of 2.4.7-p10 and govard bootstrap cannot disable it |
+| 2.4.8-p5 | 2.4.8-p5 | 8.4.1 | MariaDB 11.4.10 | opensearch 3.0 | 1.0.0 | 2026-10-04 | verified (15 of 15 passed) |
+| 2.4.9 | 2.4.9 | 8.5.8 | MariaDB 11.8.8 | opensearch 3.0 | 1.0.0 | 2026-10-04 | verified (15 of 15 passed) |
 <!-- compat:end -->
 
 Columns:
