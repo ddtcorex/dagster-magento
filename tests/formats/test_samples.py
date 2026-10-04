@@ -9,7 +9,7 @@ Marked `samples`: these tests download real files over HTTP (see
 import pytest
 
 from dagster_magento.formats import catalog, readers
-from tests.samples import fetch
+from tests.samples import fetch, fetch_as_xml
 
 pytestmark = pytest.mark.samples
 
@@ -71,3 +71,19 @@ def test_native_catalog_product_csv_parses():
 
     assert errors == []
     assert len(products) > 0
+
+
+def test_product_all_types_xml_parses_the_same_five_types():
+    """The xml container over the real sample column layout, end to end."""
+    rows = list(readers.read_rows(fetch_as_xml("product_all_types.csv")))
+
+    products, errors = catalog.products_from_rows(rows)
+
+    assert errors == []
+    assert {product.type for product in products} == {
+        "bundle",
+        "configurable",
+        "downloadable",
+        "grouped",
+        "simple",
+    }
