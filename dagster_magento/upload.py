@@ -25,6 +25,25 @@ def http_error_details(error: requests.exceptions.HTTPError) -> tuple[int | None
     body = body[:1000]
     return response.status_code, f"{error} - response body: {body}" if body else str(error)
 
+@dataclass(frozen=True)
+class DeleteMissingOutcome:
+    """What a `delete_missing` run did, or would have done.
+
+    `mode` is "preview" or "execute". In preview `would_delete` is the whole
+    candidate set and `deleted` is empty, because nothing was sent. In
+    execute `deleted` and `failed` split `would_delete`.
+
+    The full lists are returned rather than a sample: the caller decides how
+    much to log, and truncating here would make a preview unusable for the
+    dry-run-then-approve workflow it exists for.
+    """
+
+    mode: str
+    would_delete: tuple[str, ...] = ()
+    deleted: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+
+
 @dataclass
 class UploadResult:
     succeeded: int
@@ -32,24 +51,35 @@ class UploadResult:
     errors: list = field(default_factory=list)
     pending: int = 0
     skipped_unchanged: int = 0
+    delete_missing: DeleteMissingOutcome | None = None
 
     def to_metadata(self) -> dict:
+        outcome = self.delete_missing
         return {
             "succeeded": self.succeeded,
             "failed": self.failed,
             "pending": self.pending,
             "skipped_unchanged": self.skipped_unchanged,
             "error_count": len(self.errors),
+            "delete_would": len(outcome.would_delete) if outcome else 0,
+            "delete_deleted": len(outcome.deleted) if outcome else 0,
         }
 
     def merge(self, other: "UploadResult") -> "UploadResult":
         """Merge another UploadResult into this one, summing counts and concatenating errors."""
+        if self.delete_missing is not None and other.delete_missing is not None:
+            # A run deletes once. Two outcomes would mean a caller merged a
+            # second importer's result into a result that already reported a
+            # delete, and silently keeping one of them would misreport which
+            # products went away.
+            raise ValueError("cannot merge two delete_missing outcomes; a run deletes once")
         return UploadResult(
             succeeded=self.succeeded + other.succeeded,
             failed=self.failed + other.failed,
             pending=self.pending + other.pending,
             skipped_unchanged=self.skipped_unchanged + other.skipped_unchanged,
             errors=self.errors + other.errors,
+            delete_missing=self.delete_missing or other.delete_missing,
         )
 
 

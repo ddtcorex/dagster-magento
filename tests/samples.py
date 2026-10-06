@@ -50,3 +50,39 @@ def fetch(name: str) -> Path:
     tmp_path.write_bytes(data)
     tmp_path.rename(cached)
     return cached
+
+
+def fetch_as_xml(name: str) -> Path:
+    """Write the cached csv sample `<name>` out as a Magento export xml file.
+
+    The sample repo ships csv and xlsx only, and its files are GPL-3.0, so
+    they are never vendored into this repository. Converting the pinned
+    sample in memory instead keeps the xml test honest about the real column
+    layout without adding a second licence to the tree.
+    """
+    csv_path = fetch(name)
+    target = _CACHE_DIR / (csv_path.stem + ".xml")
+    if target.exists():
+        return target
+
+    import csv as _csv
+    import xml.etree.ElementTree as ET
+
+    root = ET.Element("export")
+    product = ET.SubElement(root, "product")
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        for record in _csv.DictReader(handle):
+            row = ET.SubElement(product, "row")
+            for header, value in record.items():
+                # A csv record can carry cells past the last header; the
+                # reader drops those, so the generated xml must not invent
+                # a column for them.
+                if header is None:
+                    continue
+                ET.SubElement(row, "field", {"name": header}).text = value
+    ET.indent(root, space="  ")
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_suffix(".xml.tmp")
+    ET.ElementTree(root).write(tmp_path, encoding="utf-8", xml_declaration=True)
+    tmp_path.rename(target)
+    return target

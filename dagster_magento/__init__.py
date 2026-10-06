@@ -18,11 +18,12 @@ from dagster_magento.importers import (
 from dagster_magento.operation import BulkSpec, Operation, RowError
 from dagster_magento.resource import MagentoResource
 from dagster_magento.search import build_search_criteria
-from dagster_magento.upload import UploadResult
+from dagster_magento.upload import DeleteMissingOutcome, UploadResult
 
 __all__ = [
     "AsyncBulkResult",
     "BridgeClient",
+    "DeleteMissingOutcome",
     "MagentoResource",
     "UploadResult",
     "build_search_criteria",

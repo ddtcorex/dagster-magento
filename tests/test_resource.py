@@ -260,6 +260,30 @@ def test_get_paginated_warns_and_stops_when_response_key_missing(caplog):
     assert "not found in response" in caplog.text
 
 
+def test_get_paginated_treats_a_null_items_value_as_an_empty_page():
+    """Magento answers `{"items":null}` for an empty catalog.
+
+    Measured on the sandbox with `fields=items[sku,type_id,...]` against a
+    store with no products: the projection makes Magento emit an explicit
+    null rather than an empty list. `len(None)` raised TypeError, so a
+    caller paging a store that has just been emptied crashed instead of
+    reading zero products. A null page is a page with no items.
+    """
+    resource = make_resource()
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://shop.test/rest/all/V1/integration/admin/token",
+            json="fake-token-123",
+        )
+        m.get(
+            "https://shop.test/rest/all/V1/products",
+            json={"items": None},
+        )
+        result = resource.get_paginated("products")
+
+    assert result == []
+
+
 def test_get_paginated_stops_after_a_single_partial_page():
     resource = make_resource()
     with requests_mock.Mocker() as m:

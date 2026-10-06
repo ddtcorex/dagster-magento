@@ -143,3 +143,114 @@ def test_read_rows_json_scalars_are_read_as_text(tmp_path):
     (_, row), = list(read_rows(path))
 
     assert row == {"sku": "A", "price": "12", "weight": "1.5", "flag": "1", "note": ""}
+
+
+XML_HAPPY = """<?xml version="1.0" encoding="UTF-8"?>
+<export>
+  <product>
+    <row><field name="sku">SKU1</field><field name="name">First</field></row>
+    <row><field name="sku">SKU2</field><field name="price">9.5</field></row>
+  </product>
+</export>
+"""
+
+
+def _write_xml(tmp_path, text, name="products.xml"):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_read_rows_xml_yields_ordinals_and_field_pairs(tmp_path):
+    rows = list(read_rows(_write_xml(tmp_path, XML_HAPPY)))
+
+    assert rows == [
+        (1, {"sku": "SKU1", "name": "First"}),
+        (2, {"sku": "SKU2", "price": "9.5"}),
+    ]
+
+
+def test_read_rows_xml_empty_field_is_an_empty_string(tmp_path):
+    rows = list(read_rows(_write_xml(tmp_path, '<export><product><row>'
+                                       '<field name="sku">S</field>'
+                                       '<field name="name"></field>'
+                                       '</row></product></export>')))
+
+    assert rows == [(1, {"sku": "S", "name": ""})]
+
+
+def test_read_rows_xml_repeated_field_name_keeps_the_last_value(tmp_path):
+    rows = list(read_rows(_write_xml(tmp_path, '<export><product><row>'
+                                       '<field name="sku">first</field>'
+                                       '<field name="sku">second</field>'
+                                       '</row></product></export>')))
+
+    assert rows == [(1, {"sku": "second"})]
+
+
+def test_read_rows_xml_reads_cdata_as_text(tmp_path):
+    rows = list(read_rows(_write_xml(tmp_path, '<export><product><row>'
+                                       '<field name="sku"><![CDATA[S&1]]></field>'
+                                       '</row></product></export>')))
+
+    assert rows == [(1, {"sku": "S&1"})]
+
+
+def test_read_rows_xml_without_entity_refuses_an_ambiguous_file(tmp_path):
+    path = _write_xml(tmp_path, "<export><product><row><field name='sku'>A</field></row></product>"
+                          "<product><row><field name='sku'>B</field></row></product></export>")
+
+    with pytest.raises(ValueError, match="pass entity= to choose one"):
+        list(read_rows(path))
+
+
+def test_read_rows_xml_entity_selects_one_of_several(tmp_path):
+    path = _write_xml(tmp_path, "<export><product><row><field name='sku'>A</field></row></product>"
+                          "<category><row><field name='path'>A/B</field></row></category></export>")
+
+    assert list(read_rows(path, entity="product")) == [(1, {"sku": "A"})]
+    assert list(read_rows(path, entity="category")) == [(1, {"path": "A/B"})]
+
+
+def test_read_rows_xml_entity_that_is_absent_names_the_ones_present(tmp_path):
+    path = _write_xml(tmp_path, '<export><product><row><field name="sku">A</field></row></product></export>')
+
+    with pytest.raises(ValueError, match="entity 'category' not in"):
+        list(read_rows(path, entity="category"))
+
+
+def test_read_rows_xml_refuses_a_root_that_is_not_export(tmp_path):
+    path = _write_xml(tmp_path, '<feed><product><row><field name="sku">A</field></row></product></feed>')
+
+    with pytest.raises(ValueError, match="expected an 'export' root"):
+        list(read_rows(path))
+
+
+def test_read_rows_xml_refuses_a_nested_field_instead_of_dropping_it(tmp_path):
+    path = _write_xml(tmp_path, '<export><product><row><field name="sku">A</field>'
+                             '<field name="meta"><inner>x</inner></field>'
+                             '</row></product></export>')
+
+    with pytest.raises(ValueError, match="nested element"):
+        list(read_rows(path))
+
+
+def test_read_rows_xml_malformed_reports_the_position(tmp_path):
+    path = _write_xml(tmp_path, "<export><product><row></product></export>")
+
+    with pytest.raises(ValueError) as caught:
+        list(read_rows(path))
+
+    assert "products.xml" in str(caught.value)
+
+
+def test_read_rows_xml_reports_the_ordinal_not_a_line_number(tmp_path):
+    """csv reports a physical line, xml reports an ordinal in the entity.
+
+    A file whose rows span several lines proves the two numbering schemes are
+    not the same thing, which is what the docstring promises.
+    """
+    path = _write_xml(tmp_path, '<export><product>\n<row>\n<field name="sku">A</field>\n</row>\n'
+                             '<row>\n<field name="sku">B</field>\n</row>\n</product></export>')
+
+    assert [number for number, _ in read_rows(path)] == [1, 2]

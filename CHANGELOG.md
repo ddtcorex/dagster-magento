@@ -5,6 +5,28 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-04
+
+### Added
+
+- `.xml` is a fourth file container: `read_rows(path, entity=...)` reads a
+  Magento export file (`<export><<entity>><row><field name="...">`) and yields
+  the same flat dicts a csv header row produces, so every mapper in
+  `dagster_magento.formats` works on it unchanged. The reader is streamed with
+  `iterparse`, refuses a root that is not `<export>`, refuses a `<field>` that
+  carries a nested element, and refuses a file holding several entities
+  without `entity=` before it yields any row. An xml file has no line numbers,
+  so it yields the 1-based row ordinal instead.
+- `import_products(delete_missing=...)` removes the products the catalog has
+  and the source file does not. `None` (default) never deletes and never reads
+  a listing; `"preview"` names the candidates and sends nothing; `"execute"`
+  removes them, children before parents, and counts a refusal instead of
+  aborting the run. `delete_scope` narrows the comparison to a set of
+  category or attribute-set ids, and both arguments are validated before
+  anything is written. The outcome is reported in
+  `UploadResult.delete_missing` (`DeleteMissingOutcome`) and the
+  `delete_would` / `delete_deleted` metadata.
+
 ## [0.4.1] - 2026-10-03
 
 ### Changed

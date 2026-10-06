@@ -1,4 +1,4 @@
-"""Read raw catalog import rows from csv or json, by file suffix.
+"""Read raw catalog import rows from csv, json, xlsx or xml, by file suffix.
 
 `read_rows` never validates or maps columns - it only yields the source
 line number paired with the raw string-keyed dict, so `formats/catalog.py`
@@ -7,14 +7,24 @@ can build a `RowError` that points a caller back at the exact source line.
 
 import csv
 import json
+import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from pathlib import Path
 
 
-def read_rows(path: Path) -> Iterator[tuple[int, dict]]:
-    """Yield `(line_number, row)` for each record in `path`. csv is read
+def read_rows(path: Path, entity: str | None = None) -> Iterator[tuple[int, dict]]:
+    """Yield `(row_number, row)` for each record in `path`. csv is read
     with `csv.DictReader`; json must be a top-level list of objects, or an
-    object with exactly one list-valued key (that list is used)."""
+    object with exactly one list-valued key (that list is used); xlsx is the
+    first worksheet; xml is a Magento export file.
+
+    The number is a source line number for csv, json and xlsx. An xml file
+    has no line numbers, so it yields the 1-based ordinal of the row inside
+    the selected entity instead.
+
+    `entity` only applies to xml: an export file may hold several entities,
+    and without it a file that does not hold exactly one is refused rather
+    than guessed at."""
     suffix = path.suffix.lower()
     if suffix == ".csv":
         yield from _read_csv_rows(path)
@@ -22,6 +32,8 @@ def read_rows(path: Path) -> Iterator[tuple[int, dict]]:
         yield from _read_json_rows(path)
     elif suffix == ".xlsx":
         yield from _read_xlsx_rows(path)
+    elif suffix == ".xml":
+        yield from _read_xml_rows(path, entity)
     else:
         raise ValueError(f"unsupported catalog import file suffix: {suffix}")
 
@@ -111,3 +123,91 @@ def _single_list_value(data: dict, path: Path) -> list:
             f"found {len(list_values)}"
         )
     return list_values[0]
+
+
+_XML_ROOT = "export"
+_XML_ROW_TAG = "row"
+_XML_FIELD_TAG = "field"
+
+
+def _read_xml_rows(path: Path, entity: str | None) -> Iterator[tuple[int, dict]]:
+    """Read a Magento export XML file: `<export><<entity>><row><field
+    name="...">`. One `<row>` yields one flat dict, exactly the shape a csv
+    header row produces, so `formats/catalog.py` needs no xml branch.
+
+    `iterparse` with a `clear()` after every row keeps peak memory at one row
+    instead of the whole tree, which matters for a 10k-row export. A `<field>`
+    carrying a `name` is the only child of a row that is read: any other
+    element is a nested value this dialect cannot express, so it is refused
+    rather than silently dropped.
+
+    An entity element is still open while its own rows close, so `active` is
+    set on the entity's start event. That is also where a second entity is
+    refused, so a multi-entity file never yields rows before it fails.
+    """
+    entities: list[str] = []
+    active: str | None = None      # the entity element currently open
+    root: str | None = None
+    ordinal = 0
+    depth = 0
+
+    try:
+        for event, element in ET.iterparse(path, events=("start", "end")):
+            if event == "start":
+                if root is None:
+                    root = element.tag
+                    if root != _XML_ROOT:
+                        raise ValueError(
+                            f"{path}: expected an '{_XML_ROOT}' root, found <{root}>"
+                        )
+                    depth = 1
+                    continue
+                depth += 1
+                if depth == 2:
+                    name = element.tag
+                    if entity is None and name in entities:
+                        raise ValueError(
+                            f"{path}: this export file holds {len(entities)} entities "
+                            f"({', '.join(entities)}); pass entity= to choose one"
+                        )
+                    if name not in entities:
+                        entities.append(name)
+                    active = None if entity is not None and name != entity else name
+                    element.clear()
+                continue
+
+            if depth == 3 and element.tag == _XML_ROW_TAG:
+                if active is not None:
+                    ordinal += 1
+                    yield ordinal, _xml_row_dict(path, active, element, ordinal)
+                element.clear()
+            depth -= 1
+    except ET.ParseError as error:
+        # ElementTree reports line and column but never the file, and a
+        # RowError built downstream has to name the file it came from.
+        raise ValueError(f"{path}: {error}") from error
+
+    if entity is not None and entity not in entities:
+        raise ValueError(
+            f"{path}: entity {entity!r} not in this export file "
+            f"(it holds: {', '.join(entities) or 'nothing'})"
+        )
+
+
+def _xml_row_dict(path: Path, entity: str, row, ordinal: int) -> dict:
+    values: dict[str, str] = {}
+    for field in row:
+        if field.tag != _XML_FIELD_TAG:
+            continue
+        name = field.get("name")
+        if name is None:
+            continue
+        if len(field):
+            raise ValueError(
+                f"{path}: row {ordinal} of entity {entity!r} has a nested element "
+                f"inside <field name={name!r}>; this dialect reads text values only"
+            )
+        # A repeated name keeps the last value, the same way csv.DictReader
+        # resolves a repeated header.
+        values[name] = (field.text or "").strip()
+    return values

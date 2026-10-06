@@ -1,8 +1,8 @@
 # File Formats
 
 `dagster_magento.formats` turns import files into [row models](Row-Models) in
-two steps. `read_rows(path)` reads a `.csv`, `.json` or `.xlsx` file and yields
-`(line_number, row_dict)` pairs without interpreting any column. The
+two steps. `read_rows(path)` reads a `.csv`, `.json`, `.xlsx` or `.xml` file
+and yields `(row_number, row_dict)` pairs without interpreting any column. The
 `*_from_rows` mappers then understand the column layout of Magento's native
 catalog import/export files (and the common extended sample layout built on
 it): `additional_attributes`, `configurable_variations`, `bundle_values`,
@@ -12,7 +12,7 @@ advanced pricing tier columns. Each mapper returns the models plus a list of
 not an exception. This page gives the exact syntax each parser accepts, what is
 dropped, what passes through, and the gotchas. It was checked against
 `formats/readers.py`, `formats/columns.py` and `formats/catalog.py` at version
-0.4.1.
+0.5.0.
 
 ## Quick start
 
@@ -33,21 +33,77 @@ media = import_media(resource, [p for p in products if p.images])
 
 ## read_rows
 
-`read_rows(path: Path) -> Iterator[tuple[int, dict]]`. Pass a `pathlib.Path`
-(the suffix decides the reader, compared case-insensitively). Any other
-suffix raises `ValueError("unsupported catalog import file suffix: ...")`.
+`read_rows(path: Path, entity: str | None = None) -> Iterator[tuple[int, dict]]`.
+Pass a `pathlib.Path` (the suffix decides the reader, compared
+case-insensitively). Any other suffix raises
+`ValueError("unsupported catalog import file suffix: ...")`.
 
-| Suffix | Reader | Line number yielded |
+| Suffix | Reader | Number yielded |
 | --- | --- | --- |
 | `.csv` | `csv.DictReader`, UTF-8 with an optional BOM (`utf-8-sig`), comma delimiter, first line is the header | `DictReader.line_num`: the physical line of the record. For a record with a newline inside a quoted cell it is the record's last physical line |
 | `.json` | `json.load`; the top level must be a list of objects, or an object with exactly one list-valued key (that list is used) | The 1-based index in the list |
 | `.xlsx` | `openpyxl` (install the extra: `pip install "dagster-magento[xlsx]"`), first worksheet only, row 1 is the header, formulas read as their cached values | The sheet row number (first data row is 2) |
+| `.xml` | A Magento export file, `iterparse` (see [XML export files](#xml-export-files)) | The 1-based ordinal of the row inside the selected entity: an XML file has no line numbers |
 
 xlsx cell conversion: empty cells become `""`, whole-number floats become
 integers without `.0` (`5.0` becomes `"5"`), every other value goes through
 `str()` (a date cell becomes `"2026-01-01 00:00:00"`). Cells beyond the last
 header are dropped. Without openpyxl, reading an `.xlsx` raises `ImportError`
 with the install hint.
+
+### XML export files
+
+An `.xml` file is a fourth container over the **same column vocabulary** the
+csv reader produces. A `<row>` becomes one flat dict with the same keys a csv
+header row would give, so `products_from_rows` and every other mapper are
+unchanged: there is no xml branch anywhere in `formats/`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<export>
+  <product>
+    <row>
+      <field name="sku">TSHIRT</field>
+      <field name="name">Classic T-shirt</field>
+      <field name="price">19.99</field>
+    </row>
+  </product>
+</export>
+```
+
+```python
+rows = list(read_rows(Path("imports/products.xml")))          # product is the only entity
+rows = list(read_rows(Path("imports/full.xml"), entity="product"))  # pick one of several
+```
+
+Rules, all of them refusals rather than guesses:
+
+- The root element must be `<export>`; anything else raises
+  `ValueError("... expected an 'export' root ...")`.
+- The structure is `<export><<entity>><row><field name="...">`. A file that
+  holds more than one entity without `entity=` is refused, and it is refused
+  **before any row is yielded**, so a wrong guess cannot half-import a file.
+  The error names the entities the file does hold.
+- `entity=` picks one entity by tag name; an entity the file does not hold
+  raises `ValueError("entity '...' not in this export file")`.
+- Field values are text, trimmed. `<field name="x"></field>` yields `""` and
+  a CDATA section yields its text.
+- A repeated `name` keeps the last value, the same way a repeated csv header
+  resolves.
+- A `<field>` containing another element raises `ValueError("nested
+  element")` instead of silently dropping the inner value, which this
+  dialect cannot express as a cell.
+- A malformed file raises `ValueError` naming the file, the line and the
+  column. ElementTree reports only the position, so the file name is added.
+- Reading is streamed with `iterparse` and each row is cleared after it is
+  read, so a 10k-row export costs one row of memory rather than the whole
+  tree.
+
+The row number is an ordinal, not a line number, so an error reads `row 7:
+TSHIRT` rather than `line 7: TSHIRT`. The sample suite converts the pinned
+csv sample to xml in memory and parses it, so the real column layout (the
+attribute pipe-delimited columns, nested variation values carrying newlines)
+is proven against this reader without vendoring a second GPL file.
 
 ### JSON values must be strings
 
