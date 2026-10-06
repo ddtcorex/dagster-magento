@@ -572,7 +572,7 @@ class _ResourceDeleter:
         self._resource = resource
 
     def delete(self, sku, store_code=None):
-        self._resource.delete(f"products/{sku}", store_code=store_code)
+        self._resource.delete(f"products/{urllib.parse.quote(sku, safe='')}", store_code=store_code)
 
 
 def _add_delete_failures(folded: UploadResult, outcome: DeleteMissingOutcome) -> UploadResult:

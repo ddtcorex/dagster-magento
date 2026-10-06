@@ -264,3 +264,17 @@ def test_delete_missing_deletes_children_before_a_configurable_parent():
         f"{BASE}/products/PARENT",
     ]
     assert result.delete_missing.deleted == ("CHILD", "PARENT")
+
+def test_resource_deleter_percent_encodes_the_sku():
+    import requests_mock
+
+    from dagster_magento.importers import _ResourceDeleter
+    from tests.test_importers import BASE, make_resource
+
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/integration/admin/token", json="t")
+        deleted = m.delete(requests_mock.ANY, json=True)
+
+        _ResourceDeleter(make_resource()).delete("A/B?c")
+
+    assert deleted.last_request.url.endswith("/V1/products/A%2FB%3Fc")

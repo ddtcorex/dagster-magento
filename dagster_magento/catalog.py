@@ -11,6 +11,8 @@ the operations are built by `delete_operations` and run by `guard_execute`,
 which is the only place in the delete path that touches Magento.
 """
 
+import urllib.parse
+
 from dagster import get_dagster_logger
 
 from dagster_magento.executor import MagentoImportError
@@ -170,14 +172,14 @@ def delete_operations(skus, catalog: dict, store_code: str = "default") -> list:
     contain.
 
     The endpoint is built here rather than in the executor so the executor
-    stays the one place that decides how an Operation becomes HTTP, and a
-    SKU containing a slash or a space is rejected by Magento rather than
-    silently splitting the path.
+    stays the one place that decides how an Operation becomes HTTP. The SKU is
+    percent-encoded as a single path segment, so a slash or a query character
+    in it can never redirect a delete to another endpoint.
     """
     return [
         Operation(
             method="DELETE",
-            endpoint=f"products/{sku}",
+            endpoint=f"products/{urllib.parse.quote(sku, safe='')}",
             payload=None,
             row_refs=(),
             store_code=store_code,

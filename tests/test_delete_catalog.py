@@ -378,3 +378,15 @@ class _Recorder:
         self.attempts.append(sku)
         self.deleted.append(sku)
         self.calls.append(sku)
+
+
+def test_delete_operations_percent_encode_the_sku():
+    """A SKU is one path segment. A slash, a dot pair or a query character in
+    it must never reach the URL as structure, because this call deletes."""
+    operations = delete_operations(("A/B", "../categories/5", "x?y#z"), {})
+
+    assert sorted(op.endpoint for op in operations) == [
+        "products/..%2Fcategories%2F5",
+        "products/A%2FB",
+        "products/x%3Fy%23z",
+    ]
