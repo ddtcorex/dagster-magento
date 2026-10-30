@@ -13,7 +13,7 @@ import run end to end, and where to read next.
 | Item | Value | Source |
 | --- | --- | --- |
 | Python | `>=3.10` | `pyproject.toml` `requires-python` |
-| Dagster | `>=1.13.17` | `pyproject.toml` dependencies |
+| Dagster | `>=1.13.27` | `pyproject.toml` dependencies |
 | requests | `>=2.28` | `pyproject.toml` dependencies |
 | pydantic | `>=2` | `pyproject.toml` dependencies |
 | openpyxl | `>=3.1`, only with the `xlsx` extra | `pyproject.toml` optional dependencies |
@@ -27,7 +27,7 @@ described in [Optional-Bridge](Optional-Bridge); nothing on this page needs it.
 The package is not on PyPI. It is installed from a git tag:
 
 ```
-pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@v0.5.0"
+pip install "dagster-magento[xlsx] @ git+https://github.com/ddtcorex/dagster-magento.git@v0.5.1"
 ```
 
 The `xlsx` extra pulls in `openpyxl`, which is needed only to read `.xlsx`
@@ -35,7 +35,7 @@ source files. CSV and JSON sources use the standard library, so you can drop
 the extra when you never read spreadsheets:
 
 ```
-pip install "dagster-magento @ git+https://github.com/ddtcorex/dagster-magento.git@v0.5.0"
+pip install "dagster-magento @ git+https://github.com/ddtcorex/dagster-magento.git@v0.5.1"
 ```
 
 If you later call `read_rows()` on an `.xlsx` file without the extra, it

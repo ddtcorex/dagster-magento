@@ -5,6 +5,15 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-30
+
+### Changed
+
+- The Dagster floor is `1.13.27`, the release the hermetic suite is verified
+  against. The `dagster__is_secret` password masking the resource relies on
+  was re-checked on it; `materialize(..., input_values=...)` still does not
+  exist there.
+
 ## [0.5.0] - 2026-10-04
 
 ### Added
