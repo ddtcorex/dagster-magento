@@ -5,6 +5,18 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- The Dagster floor is `1.13.28`, the latest release, and the hermetic suite is
+  verified against it. `1.13.28` adds protobuf 7 support and UI and integration
+  changes (dbt, Databricks, Kubernetes, Snowflake); it touches nothing this
+  library depends on. The behaviours the resource and the tests pin are
+  unchanged on it: `dagster__is_secret` still keeps the password out of
+  `repr()`, `materialize(..., input_values=...)` still does not exist, and
+  `SecretStr` on a `ConfigurableResource` is still rejected with
+  `DagsterInvalidPythonicConfigDefinitionError`, so the field pattern in
+  `resource.py` stays as it is.
+
 ## [0.5.1] - 2026-10-30
 
 ### Changed

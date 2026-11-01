@@ -211,7 +211,7 @@ consecutive-failure circuit breaker if it ever bites a real consumer.
 - When pinning Dagster behaviour (`get_dagster_logger()` output,
   `AssetExecutionContext`), verify the installed version's API instead of
   assuming: it changed during this package's own development
-  (`materialize(..., input_values=...)` does not exist on 1.13.27).
+  (`materialize(..., input_values=...)` does not exist on 1.13.28).
 - `test_same_catalog_imports_in_bulk_mode` used to be red on the sandbox for
   a measured environment defect, not a library bug, and it is now green: on
   MariaDB, Magento publishes an async bulk on the broker before it commits

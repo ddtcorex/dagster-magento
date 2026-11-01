@@ -13,7 +13,7 @@ import run end to end, and where to read next.
 | Item | Value | Source |
 | --- | --- | --- |
 | Python | `>=3.10` | `pyproject.toml` `requires-python` |
-| Dagster | `>=1.13.27` | `pyproject.toml` dependencies |
+| Dagster | `>=1.13.28` | `pyproject.toml` dependencies |
 | requests | `>=2.28` | `pyproject.toml` dependencies |
 | pydantic | `>=2` | `pyproject.toml` dependencies |
 | openpyxl | `>=3.1`, only with the `xlsx` extra | `pyproject.toml` optional dependencies |

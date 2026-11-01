@@ -125,7 +125,7 @@ From `pyproject.toml`:
 | Requirement | Declared |
 | --- | --- |
 | Python | `>=3.10` |
-| dagster | `>=1.13.27` (the comment says this is the version the test suite is actually verified against; the earlier `>=1.5` floor was an unverified guess) |
+| dagster | `>=1.13.28` (the comment says this is the version the test suite is actually verified against; the earlier `>=1.5` floor was an unverified guess) |
 | requests | `>=2.28` |
 | pydantic | `>=2` |
 | openpyxl (extra `xlsx`) | `>=3.1` |
