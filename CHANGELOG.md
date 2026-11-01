@@ -5,6 +5,8 @@ follows Keep a Changelog and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-01
+
 ### Changed
 
 - The Dagster floor is `1.13.28`, the latest release, and the hermetic suite is
